@@ -1,0 +1,10 @@
+[package]
+name = "aeternusdb"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A library that provides an embeddable, persistent key-value store for fast storage."
+readme = "README.md"
+repository = "https://github.com/kamil-kielbasa/aeternusdb"
+
+[dependencies]
