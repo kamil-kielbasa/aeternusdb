@@ -8,3 +8,11 @@ readme = "README.md"
 repository = "https://github.com/kamil-kielbasa/aeternusdb"
 
 [dependencies]
+bincode = "2.0.1"
+crc32fast = "1.5.0"
+thiserror = "2.0.17"
+tracing = "0.1.41"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tempfile = "3.23.0"
