@@ -1,8 +1,18 @@
 //! Write-Ahead Logging (WAL) Module
 //!
-//! This module implements a durable, append-only write-ahead log (WAL) suitable for
-//! simple key-value storage engines. It emphasizes correctness, detectability of corruption,
-//! and safe concurrent access via `Arc<Mutex<File>>`.
+//! This module implements a **durable**, **append-only**, and **generic** Write-Ahead Log (WAL)
+//! suitable for embedded databases and key-value storage engines.  
+//! It provides **type-safe**, **CRC-protected**, and **thread-safe** persistence of arbitrary records
+//! that implement the [`WalData`] trait.
+//!
+//! //! ## Design Overview
+//!
+//! The WAL ensures crash recovery and corruption detection for any serializable record type
+//! (`MemTableRecord`, `ManifestRecord`, etc.). It uses [`bincode`] for compact serialization
+//! and [`crc32fast`] for data integrity.
+//!
+//! Each record is appended sequentially to disk with atomic file syncs to ensure durability.
+//! The file handle is shared safely between threads using `Arc<Mutex<File>>`.
 //!
 //! # On-disk layout
 //!
@@ -13,21 +23,30 @@
 //! ...
 //! ```
 //!
-//! - Header is serialized with `bincode` and followed by a 4-byte CRC32 checksum (little-endian).
-//! - Each record contains a 4-byte little-endian length, the `bincode`-serialized `WalRecord`,
-//!   and a 4-byte CRC32 checksum computed over `length || record_bytes`.
+//! - **Header** — a [`WalHeader`] structure followed by a 4-byte CRC32 checksum.
+//! - **Record** — consists of:
+//!   - 4-byte little-endian length prefix
+//!   - serialized record bytes (`bincode` format)
+//!   - 4-byte CRC32 checksum computed over `len || record_bytes`
 //!
 //! # Concurrency model
 //!
-//! - The WAL file handle is stored as `Arc<Mutex<File>>` so multiple owners (the `Wal` instance,
-//!   replay iterators, or background tasks) can share the file safely.
-//! - The iterator seeks to its own tracked `offset` before each read to avoid races with other appenders.
+//! - WAL access is **synchronized** via `Arc<Mutex<File>>`, ensuring consistent reads and writes.
+//! - Multiple components can safely share the same WAL — e.g. background compaction, recovery, and
+//!   write threads.
+//! - [`WalIter`] tracks its own logical offset, seeking before each read to avoid race conditions
+//!   with concurrent appenders.
 //!
 //! # Guarantees
 //!
-//! - Per-record and header-level CRC32 checksums detect disk corruption and truncated writes.
-//! - Replay stops at first detected corruption; earlier records remain available.
-//! - `max_record_size` bounds memory usage during replay.
+//! - **Durability:** Every `append()` is followed by an `fsync()` via [`File::sync_all`].  
+//! - **Integrity:** Both header and record checksums are verified during replay.  
+//! - **Corruption detection:** Replay stops at first failed checksum or truncated write.  
+//! - **Safety:** Thread-safe, generic over any [`bincode`] `Encode`/`Decode` type.
+
+// ------------------------------------------------------------------------------------------------
+// Includes
+// ------------------------------------------------------------------------------------------------
 
 use std::{
     fs::{File, OpenOptions},
@@ -126,45 +145,36 @@ impl WalHeader {
     }
 }
 
-/// A single entry stored in the WAL.
+// ------------------------------------------------------------------------------------------------
+// Traits
+// ------------------------------------------------------------------------------------------------
+
+/// Trait for data types that can be written to and read from the WAL.
 ///
-/// An `Entry` may represent an insertion/update (with `value`) or a deletion (tombstone).
-#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
-pub struct Entry {
-    /// Logical timestamp or sequence number for this record.
-    ///
-    /// Used for ordering or conflict resolution during recovery.
-    pub timestamp: u64,
-
-    /// Whether this entry represents a key deletion.
-    pub is_delete: bool,
-
-    /// Optional binary value. Absent if `is_delete = true`.
-    pub value: Option<Vec<u8>>,
-}
-
-/// WAL record containing key and entry.
+/// Any record type used with [`Wal`] must implement this trait,
+/// which acts as a marker requiring [`bincode`] serialization.
 ///
-/// Serialized via `bincode` as the payload for each record.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
-pub struct WalRecord {
-    /// Binary key for this record.
-    key: Vec<u8>,
-
-    /// Metadata and value payload.
-    entry: Entry,
-}
+/// # Required Traits
+/// - [`bincode::Encode`]
+/// - [`bincode::Decode`]
+/// - [`Send`] + [`Sync`] + [`Debug`]
+pub trait WalData: bincode::Encode + bincode::Decode<()> + std::fmt::Debug + Send + Sync {}
+impl<T> WalData for T where T: bincode::Encode + bincode::Decode<()> + std::fmt::Debug + Send + Sync {}
 
 // ------------------------------------------------------------------------------------------------
 // WAL Core
 // ------------------------------------------------------------------------------------------------
 
-/// Thread-safe Write-Ahead Log.
+/// A generic, thread-safe Write-Ahead Log for durable record storage.
 ///
-/// Use `Arc<Wal>` to share WAL across threads. The underlying file handle is shared via
-/// `Arc<Mutex<File>>`, permitting concurrent iterators and writers (I/O is serialized by the mutex).
+/// See the [module-level documentation](self) for more details on format,
+/// concurrency, and guarantees.
+///
+/// # Type Parameters
+///
+/// * `T` — Any record type implementing [`WalData`].
 #[derive(Debug)]
-pub struct Wal {
+pub struct Wal<T: WalData> {
     /// Thread-safe file handle for WAL operations.
     inner_file: Arc<Mutex<File>>,
 
@@ -173,9 +183,12 @@ pub struct Wal {
 
     /// Persistent header with metadata and integrity info.
     header: WalHeader,
+
+    /// Marker field to associate this WAL with the generic record type `T`.
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl Wal {
+impl<T: WalData> Wal<T> {
     /// Open or create a WAL file at the given path.
     ///
     /// # Parameters
@@ -262,47 +275,25 @@ impl Wal {
             inner_file: Arc::new(Mutex::new(file)),
             path: path_ref.display().to_string(),
             header,
+            _phantom: std::marker::PhantomData,
         })
     }
 
-    /// Append a record to the WAL.
+    /// Appends a single record to the WAL.
     ///
-    /// Each record is serialized with `bincode` and written as:
-    /// `[u32 len LE][record_bytes][u32 crc32 LE]` where CRC32 is over `len || record_bytes`.
+    /// The record is serialized using [`bincode`] and written as:
+    /// `[u32 len LE][record_bytes][u32 crc32 LE]`,
+    /// where the CRC is computed over the `len || record_bytes`.
     ///
     /// # Parameters
-    ///
-    /// - `key`: Key bytes.
-    /// - `value`: Optional value bytes (None for delete).
-    /// - `timestamp`: Logical timestamp or sequence number.
-    /// - `is_delete`: Whether this record is a deletion.
-    pub fn append(
-        &self,
-        key: &[u8],
-        value: Option<&[u8]>,
-        timestamp: u64,
-        is_delete: bool,
-    ) -> Result<(), WalError> {
-        trace!(
-            "Appending record: key={:?}, timestamp={}, is_delete={}",
-            key, timestamp, is_delete
-        );
-
-        let entry = Entry {
-            timestamp,
-            is_delete,
-            value: value.map(|v| v.to_vec()),
-        };
-
-        let record = WalRecord {
-            key: key.to_vec(),
-            entry,
-        };
+    /// - `record`: Reference to the record implementing [`WalData`].
+    pub fn append(&self, record: &T) -> Result<(), WalError> {
+        trace!("Appending record: {:?}", record,);
 
         let config = standard().with_fixed_int_encoding();
 
-        let record = encode_to_vec(&record, config).map_err(WalError::Encode)?;
-        let record_len = record.len() as u32;
+        let record_bytes = encode_to_vec(record, config).map_err(WalError::Encode)?;
+        let record_len = record_bytes.len() as u32;
 
         if record_len > self.header.max_record_size {
             return Err(WalError::RecordTooLarge(record_len as usize));
@@ -311,7 +302,7 @@ impl Wal {
         // Compute checksum over [len_le || record_bytes]
         let mut hasher = Crc32::new();
         hasher.update(&record_len.to_le_bytes());
-        hasher.update(&record);
+        hasher.update(&record_bytes);
         let checksum = hasher.finalize();
 
         // Lock and append atomically (from user's perspective).
@@ -321,7 +312,7 @@ impl Wal {
             .map_err(|_| WalError::Internal("Mutex poisoned".into()))?;
 
         guard.write_all(&record_len.to_le_bytes())?;
-        guard.write_all(&record)?;
+        guard.write_all(&record_bytes)?;
         guard.write_all(&checksum.to_le_bytes())?;
         guard.sync_all()?;
 
@@ -332,12 +323,11 @@ impl Wal {
         Ok(())
     }
 
-    /// Create a replay iterator starting immediately after the header.
+    /// Returns an iterator that replays all valid records from the WAL.
     ///
-    /// The iterator holds an `Arc` clone of the internal file handle and manages its own
-    /// `offset`. The iterator seeks to `offset` before each record read to avoid races
-    /// with concurrent appenders.
-    pub fn replay_iter(&self) -> Result<WalIter, WalError> {
+    /// The iterator reads the WAL sequentially, verifies CRC checksums,
+    /// and decodes each entry into its original record type `T`.
+    pub fn replay_iter(&self) -> Result<WalIter<T>, WalError> {
         info!("Starting WAL replay from file: {}", self.path);
 
         let config = standard().with_fixed_int_encoding();
@@ -349,6 +339,7 @@ impl Wal {
             config,
             offset: start_offset,
             max_record_size: self.header.max_record_size as usize,
+            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -385,7 +376,7 @@ impl Wal {
     }
 }
 
-impl Drop for Wal {
+impl<T: WalData> Drop for Wal<T> {
     fn drop(&mut self) {
         match self.inner_file.lock() {
             Ok(guard) => {
@@ -409,14 +400,15 @@ impl Drop for Wal {
 // WalIter
 // ------------------------------------------------------------------------------------------------
 
-/// Iterator for replaying WAL records.
+/// Streaming WAL replay iterator.
 ///
-/// Holds a cloned `Arc<Mutex<File>>`. Each `next()` locks the file briefly,
-/// seeks to the iterator's current `offset`, reads one record, validates checksum,
-/// decodes it, updates `offset`, and returns it.
+/// `WalIter` reads records sequentially from the WAL file and yields decoded `T` values.
+/// It is designed to:
 ///
-/// On corruption or I/O error the iterator yields `Err(WalError)` (not panic).
-pub struct WalIter {
+/// - **Stream** records without allocating the entire WAL into memory (one record at a time).
+/// - **Share** the WAL file safely with appenders by holding an `Arc<Mutex<File>>`.
+/// - **Detect corruption** and truncated writes using CRC32 checksums and length bounds.
+pub struct WalIter<T: WalData> {
     /// Shared file handle protected by a mutex.
     file: Arc<Mutex<File>>,
 
@@ -432,10 +424,13 @@ pub struct WalIter {
 
     /// Maximum allowed record size.
     max_record_size: usize,
+
+    /// Marker field to associate this WAL iterator with the generic record type `T`.
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl Iterator for WalIter {
-    type Item = Result<(Vec<u8>, Entry), WalError>;
+impl<T: WalData> Iterator for WalIter<T> {
+    type Item = Result<T, WalError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Lock only during the read of one record to reduce contention.
@@ -506,12 +501,16 @@ impl Iterator for WalIter {
         }
 
         // Decode the record payload.
-        match decode_from_slice::<WalRecord, _>(&record_bytes, self.config) {
-            Ok((rec, _)) => Some(Ok((rec.key, rec.entry))),
+        match decode_from_slice::<T, _>(&record_bytes, self.config) {
+            Ok((record, _)) => Some(Ok(record)),
             Err(e) => Some(Err(WalError::Decode(e))),
         }
     }
 }
+
+// ------------------------------------------------------------------------------------------------
+// Unit tests
+// ------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -529,21 +528,28 @@ mod tests {
     const WAL_CRC32_SIZE: usize = std::mem::size_of::<u32>();
     const WAL_HDR_SIZE: usize = 12;
 
+    #[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
+    struct MemTableRecord {
+        key: Vec<u8>,
+        value: Option<Vec<u8>>,
+        timestamp: u64,
+        deleted: bool,
+    }
+
+    #[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
+    struct ManifestRecord {
+        id: u64,
+        path: String,
+        creation_timestamp: u64,
+    }
+
     fn init_tracing() {
         let _ = Subscriber::builder()
             .with_max_level(Level::TRACE)
             .try_init();
     }
 
-    fn make_entry(ts: u64, del: bool, val: Option<Vec<u8>>) -> Entry {
-        Entry {
-            timestamp: ts,
-            is_delete: del,
-            value: val,
-        }
-    }
-
-    fn collect_iter(wal: &Wal) -> Result<Vec<(Vec<u8>, Entry)>, WalError> {
+    fn collect_iter<T: WalData>(wal: &Wal<T>) -> Result<Vec<T>, WalError> {
         wal.replay_iter()?.collect()
     }
 
@@ -555,10 +561,15 @@ mod tests {
         let path = tmp.path().join("wal_1.bin");
         let wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
-        let insert = vec![(vec![0, 0, 0, 1], make_entry(841, false, Some(vec![255; 4])))];
-        for (k, e) in &insert {
-            wal.append(k, e.value.as_deref(), e.timestamp, e.is_delete)
-                .unwrap();
+        let insert = vec![MemTableRecord {
+            key: b"a".to_vec(),
+            value: Some(b"v1".to_vec()),
+            timestamp: 1,
+            deleted: false,
+        }];
+
+        for record in &insert {
+            wal.append(record).unwrap();
         }
 
         let replayed = collect_iter(&wal).unwrap();
@@ -574,17 +585,25 @@ mod tests {
         let wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let insert = vec![
-            (vec![0, 0, 0, 1], make_entry(841, false, Some(vec![255; 4]))),
-            (
-                vec![0, 0, 0, 2],
-                make_entry(842, false, Some(vec![1, 2, 3, 4])),
-            ),
-            (vec![0, 0, 0, 3], make_entry(843, true, None)),
+            ManifestRecord {
+                id: 0,
+                path: "/db/table-0".to_string(),
+                creation_timestamp: 100,
+            },
+            ManifestRecord {
+                id: 1,
+                path: "/db/table-1".to_string(),
+                creation_timestamp: 101,
+            },
+            ManifestRecord {
+                id: 2,
+                path: "/db/table-2".to_string(),
+                creation_timestamp: 102,
+            },
         ];
 
-        for (k, e) in &insert {
-            wal.append(k, e.value.as_deref(), e.timestamp, e.is_delete)
-                .unwrap();
+        for record in &insert {
+            wal.append(record).unwrap();
         }
 
         let replayed = collect_iter(&wal).unwrap();
@@ -600,21 +619,28 @@ mod tests {
         let mut wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let insert = vec![
-            (vec![0, 0, 0, 1], make_entry(124, false, Some(vec![255; 4]))),
-            (
-                vec![0, 0, 0, 2],
-                make_entry(125, false, Some(vec![1, 2, 3, 4])),
-            ),
-            (vec![0, 0, 0, 3], make_entry(126, true, None)),
-            (
-                vec![0, 0, 0, 4],
-                make_entry(127, false, Some(vec![11, 13, 17, 19])),
-            ),
+            MemTableRecord {
+                key: b"a".to_vec(),
+                value: Some(b"v1".to_vec()),
+                timestamp: 1,
+                deleted: false,
+            },
+            MemTableRecord {
+                key: b"b".to_vec(),
+                value: Some(b"v2".to_vec()),
+                timestamp: 2,
+                deleted: false,
+            },
+            MemTableRecord {
+                key: b"c".to_vec(),
+                value: Some(b"v3".to_vec()),
+                timestamp: 3,
+                deleted: false,
+            },
         ];
 
-        for (k, e) in &insert {
-            wal.append(k, e.value.as_deref(), e.timestamp, e.is_delete)
-                .unwrap();
+        for record in &insert {
+            wal.append(record).unwrap();
         }
 
         let replayed = collect_iter(&wal).unwrap();
@@ -634,28 +660,38 @@ mod tests {
         let mut wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let batch1 = vec![
-            (vec![0, 0, 0, 1], make_entry(124, false, Some(vec![255; 4]))),
-            (
-                vec![0, 0, 0, 2],
-                make_entry(125, false, Some(vec![1, 2, 3, 4])),
-            ),
+            ManifestRecord {
+                id: 0,
+                path: "/db/table-0".to_string(),
+                creation_timestamp: 100,
+            },
+            ManifestRecord {
+                id: 1,
+                path: "/db/table-1".to_string(),
+                creation_timestamp: 101,
+            },
         ];
 
         let batch2 = vec![
-            (vec![0, 0, 0, 3], make_entry(126, true, None)),
-            (
-                vec![0, 0, 0, 4],
-                make_entry(127, false, Some(vec![11, 13, 17, 19])),
-            ),
-            (
-                vec![0, 0, 0, 5],
-                make_entry(128, false, Some(vec![16, 32, 64, 128])),
-            ),
+            ManifestRecord {
+                id: 100,
+                path: "/db/table-100".to_string(),
+                creation_timestamp: 1000,
+            },
+            ManifestRecord {
+                id: 101,
+                path: "/db/table-101".to_string(),
+                creation_timestamp: 1001,
+            },
+            ManifestRecord {
+                id: 102,
+                path: "/db/table-102".to_string(),
+                creation_timestamp: 1002,
+            },
         ];
 
-        for (k, e) in &batch1 {
-            wal.append(k, e.value.as_deref(), e.timestamp, e.is_delete)
-                .unwrap();
+        for record in &batch1 {
+            wal.append(record).unwrap();
         }
 
         let replayed = collect_iter(&wal).unwrap();
@@ -665,9 +701,8 @@ mod tests {
         let replayed = collect_iter(&wal).unwrap();
         assert_eq!(replayed.len(), 0);
 
-        for (k, e) in &batch2 {
-            wal.append(k, e.value.as_deref(), e.timestamp, e.is_delete)
-                .unwrap();
+        for record in &batch2 {
+            wal.append(record).unwrap();
         }
 
         let replayed = collect_iter(&wal).unwrap();
@@ -684,7 +719,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("bad_header.bin");
-        let _wal = Wal::open(&path, None).unwrap();
+        let _wal: Wal<MemTableRecord> = Wal::open(&path, None).unwrap();
 
         // Corrupt a single byte inside header bytes (not checksum).
         let mut f = OpenOptions::new()
@@ -696,7 +731,7 @@ mod tests {
         f.write_all(&[0x99]).unwrap();
         f.sync_all().unwrap();
 
-        let err = Wal::open(&path, None).unwrap_err();
+        let err = Wal::<MemTableRecord>::open(&path, None).unwrap_err();
         assert!(matches!(err, WalError::InvalidHeader(_)));
         assert!(err.to_string().contains("Header checksum mismatch"));
     }
@@ -709,7 +744,13 @@ mod tests {
         let path = tmp.path().join("bad_len.bin");
         let wal = Wal::open(&path, None).unwrap();
 
-        wal.append(b"k", Some(b"v"), 1, false).unwrap();
+        let record = MemTableRecord {
+            key: b"a".to_vec(),
+            value: Some(b"v1".to_vec()),
+            timestamp: 1,
+            deleted: false,
+        };
+        wal.append(&record).unwrap();
         let mut f = OpenOptions::new()
             .read(true)
             .write(true)
@@ -733,7 +774,12 @@ mod tests {
         let path = tmp.path().join("bad_record.bin");
         let wal = Wal::open(&path, None).unwrap();
 
-        wal.append(b"k", Some(b"v"), 1, false).unwrap();
+        let record = ManifestRecord {
+            id: 999,
+            path: "/db/table-999".to_string(),
+            creation_timestamp: 9999,
+        };
+        wal.append(&record).unwrap();
         let mut f = OpenOptions::new()
             .read(true)
             .write(true)
@@ -755,8 +801,24 @@ mod tests {
         let path = tmp.path().join("corrupted_data.bin");
         let wal = Wal::open(&path, None).unwrap();
 
-        wal.append(b"key1", Some(b"value1"), 1, false).unwrap();
-        wal.append(b"key2", Some(b"value2"), 2, false).unwrap();
+        let insert = vec![
+            MemTableRecord {
+                key: b"a".to_vec(),
+                value: Some(b"v1".to_vec()),
+                timestamp: 1,
+                deleted: false,
+            },
+            MemTableRecord {
+                key: b"b".to_vec(),
+                value: None,
+                timestamp: 2,
+                deleted: true,
+            },
+        ];
+
+        for record in &insert {
+            wal.append(record).unwrap();
+        }
 
         // Corrupt middle of file (inside record bytes)
         let mut f = OpenOptions::new()
@@ -786,14 +848,25 @@ mod tests {
         let wal = Wal::open(&path, None).unwrap();
 
         let records = vec![
-            (b"k1".to_vec(), make_entry(1, false, Some(b"v1".to_vec()))),
-            (b"k2".to_vec(), make_entry(2, false, Some(b"v2".to_vec()))),
-            (b"k3".to_vec(), make_entry(3, false, Some(b"v3".to_vec()))),
+            ManifestRecord {
+                id: 100,
+                path: "/db/table-100".to_string(),
+                creation_timestamp: 1000,
+            },
+            ManifestRecord {
+                id: 101,
+                path: "/db/table-101".to_string(),
+                creation_timestamp: 1001,
+            },
+            ManifestRecord {
+                id: 102,
+                path: "/db/table-102".to_string(),
+                creation_timestamp: 1002,
+            },
         ];
 
-        for (k, e) in &records {
-            wal.append(k, e.value.as_deref(), e.timestamp, e.is_delete)
-                .unwrap();
+        for record in &records {
+            wal.append(record).unwrap();
         }
 
         // Corrupt *last record’s checksum* only
@@ -812,14 +885,14 @@ mod tests {
         let mut replayed = vec![];
         while let Some(res) = iter.next() {
             match res {
-                Ok((k, e)) => replayed.push((k, e)),
+                Ok(record) => replayed.push(record),
                 Err(WalError::ChecksumMismatch) => break,
                 Err(e) => panic!("Unexpected error: {:?}", e),
             }
         }
 
         assert_eq!(replayed.len(), 2, "Only first two records should be valid");
-        assert_eq!(replayed[0].0, b"k1");
-        assert_eq!(replayed[1].0, b"k2");
+        assert_eq!(replayed[0].path, "/db/table-100".to_string());
+        assert_eq!(replayed[1].path, "/db/table-101".to_string());
     }
 }
