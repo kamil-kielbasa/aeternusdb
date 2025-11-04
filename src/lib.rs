@@ -1,2 +1,2 @@
-mod memtable;
-mod wal;
+pub mod memtable;
+pub mod wal;
