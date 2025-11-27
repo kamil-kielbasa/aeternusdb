@@ -449,73 +449,177 @@ Sequential write flow with no backward seeking:
 
 ---
 
-## Lookup Algorithm
+## GET and SCAN Semantics
 
-```
-get(key) → Option<Value>:
+### 1. Point Lookup: `get(key)`
 
-1. Check Properties: min.key ≤ key ≤ max.key
-   If out of range: return None
-   
-2. Check Bloom Filter: might_contain(key)
-   If false: return None (fast negative lookup)
-   
-3. Load Range Deletes (if present):
-   If key is in deleted range: return None
-   
-4. Binary search Index using separator keys:
-   Find block_offset, block_size where key might exist
-   
-5. Read Data Block from disk:
-   - Seek to block_offset
-   - Read block_size bytes (content + trailer)
-   - Read trailer: uncompressed_size, crc32
-   - Validate crc32
-   
-6. Linear search within block:
-   For each cell:
-     If cell.key == key AND cell.lsn is visible:
-       If cell.is_delete: return None
-       Else: return Some(cell.value)
-   
-7. return None (key not found)
-```
+**Purpose:** Retrieve the most recent value (or deletion) for a single key.  
 
-**Typical case performance:**
-- Header check: O(1) in-memory (from Properties)
-- Bloom filter check: O(1) in-memory  
-- Index binary search: O(log N) in-memory  
-- Block read: 1 disk I/O (~4KiB)
-- Within-block scan: O(M) where M ≈ 50-100 entries
+**Per-SSTable behavior:**
+
+- A single SSTable `get(key)` returns one of:
+
+| Result | Meaning |
+|--------|---------|
+| `Put` | Key exists with a value in this SSTable; include `lsn` and `timestamp`. |
+| `Delete` | Key was explicitly deleted in this SSTable (point tombstone). |
+| `RangeDelete` | Key falls within a range tombstone in this SSTable. |
+| `NotFound` | Key is absent in this SSTable and not covered by any local range tombstone. |
+
+**Global (multi-SSTable) behavior:**
+
+1. Collect candidate entries for `key` from all SSTables where `min.key ≤ key ≤ max.key`.
+2. Select the entry with the **highest LSN**.
+3. Apply **range tombstones** from any SSTable that cover the key **with LSN greater than the selected key LSN**.
+4. Return the final result as one of `Put`, `Delete`, `RangeDelete`, or `NotFound`.
+
+**Notes:**
+
+- LSN is the primary ordering criterion; timestamp can be used for tie-breaking.
+- Bloom filters and SSTable key ranges (`min.key..max.key`) can be used to skip SSTables efficiently.
+- This design ensures **correct conflict resolution** while keeping SSTables immutable.
 
 ---
 
-## Range Scan Algorithm
+### 2. Range Scan: `scan(start_key, end_key)`
 
-```
-scan(start_key, end_key) → Iterator<(Key, Value)>:
+**Purpose:** Iterate over all keys in a range `[start_key, end_key)` in sorted order.  
 
-1. Check Properties: Overlap check with [min.key, max.key]
-   If no overlap: return empty iterator
-   
-2. Binary search Index: Find first block containing start_key
-   
-3. Load Range Deletes (if present):
-   Get overlapping ranges with [start_key, end_key)
-   
-4. Sequential block iteration:
-   For each block from start to end:
-     - Read block (offset, size from index)
-     - Read trailer, validate crc32
-     - Decompress if needed
-     For each cell in block:
-       If start_key ≤ cell.key < end_key:
-         If NOT deleted by range tombstone:
-           If NOT cell.is_delete:
-             yield (cell.key, cell.value)
-   
-5. Continue until cell.key ≥ end_key
-```
+**Per-SSTable behavior:**
+
+- Returns an **iterator** yielding all entries in the range without filtering:
+
+| Entry type | Meaning |
+|------------|---------|
+| `Put` | Key exists in this SSTable. |
+| `Delete` | Key was deleted in this SSTable. |
+| `RangeDelete` | Covers some keys in the scanned range. |
+
+- **No filtering by LSN or global visibility** is applied at this stage.
+
+**Global (multi-SSTable) behavior:**
+
+1. Merge iterators from all relevant SSTables (based on `[min.key, max.key]` overlaps).
+2. Resolve conflicts across SSTables:
+   - For the same key, pick **entry with highest LSN**.
+   - Apply any **range tombstones** covering that key from other SSTables.
+3. Yield the **visible entries** (`Put` or `Delete`) in sorted order.
+
+**Notes:**
+
+- The per-SSTable `scan` is intentionally **unfiltered** to simplify SSTable immutability and avoid redundant work.
+- Upper-level merge iterator ensures **correct global ordering and visibility**.
+
+---
+
+### GET / SCAN: Per-SST vs Global Merge (Visual Table)
+
+Legend:  
+- **P** = Put  
+- **D** = Delete (point tombstone)  
+- **R** = RangeDelete  
+- **LSN** = Log Sequence Number (higher = newer)
+
+---
+
+#### Example SSTables:
+
+| SSTable | Key | Entry | LSN | Notes                  |
+|---------|-----|-------|-----|-----------------------|
+| 1       | a   | P     | 10  |                       |
+| 1       | b   | D     | 12  |                       |
+| 1       | c   | P     | 8   |                       |
+| 1       | d   | P     | 15  |                       |
+| 1       | -   | R     | 14  | RangeDelete b..d      |
+| 2       | b   | P     | 20  |                       |
+| 2       | c   | D     | 18  |                       |
+| 2       | e   | P     | 25  |                       |
+| 2       | -   | R     | 22  | RangeDelete c..f      |
+
+---
+
+#### Per-SST GET("c") candidates:
+
+| SSTable | Entry | LSN | Covered by RangeDelete? |
+|---------|-------|-----|-------------------------|
+| 1       | P     | 8   | Yes (R=14)              |
+| 2       | D     | 18  | Yes (R=22)              |
+
+**Global GET("c") resolution:**  
+
+1. Compare LSNs and range deletes:  
+
+SST2 R(22) > SST2 D(18) > SST1 R(14) > SST1 P(8)
+
+2. Result: **Deleted** (key is covered by newer range tombstone)
+
+---
+
+#### Per-SST SCAN("b".."e") raw output:
+
+| SSTable | Key | Entry | LSN |
+|---------|-----|-------|-----|
+| 1       | b   | D     | 12  |
+| 1       | c   | P     | 8   |
+| 1       | d   | P     | 15  |
+| 1       | -   | R     | 14  |
+| 2       | b   | P     | 20  |
+| 2       | c   | D     | 18  |
+| 2       | e   | P     | 25  |
+| 2       | -   | R     | 22  |
+
+---
+
+#### Global merged SCAN("b".."e"):
+
+| Key | Final Entry | Reason / LSN Conflict                  |
+|-----|------------|---------------------------------------|
+| b   | P(20)      | SST2 P(20) > SST1 D(12)               |
+| c   | Deleted    | Covered by SST2 R(22) > any P/D       |
+| d   | Deleted    | Covered by SST1 R(14) < SST2 R(22) → Deleted by newer R |
+| e   | P(25)      | Only SST2 entry                        |
+
+---
+
+### Key Principles:
+
+1. **Per-SST iterators** return raw entries, including:  
+- Put  
+- Delete  
+- RangeDelete  
+They **do not filter** based on LSN or cross-SST conflicts.  
+
+2. **Global merge iterators** resolve conflicts:  
+- Compare LSNs for the same key  
+- Range tombstones override lower-LSN entries  
+- Highest LSN wins for conflicting point tombstones  
+
+3. **GET(key)** is a special case of scan for a single key:  
+- Same conflict resolution rules  
+- Returns one of: Put, Delete, RangeDelete, or NotFound  
+
+4. **SSTables remain immutable**:  
+- Conflict resolution is entirely done at query time  
+- Supports multi-version concurrency and efficient compaction  
+
+---
+
+### 3. Design Rationale
+
+1. **Immutable SSTables:**  
+   SSTables are never modified after creation; all filtering happens at read/merge time.
+
+2. **Separation of concerns:**  
+   - Per-SSTable iterators provide **raw entries** (including tombstones and range deletes).  
+   - Merge iterators handle **conflict resolution and visibility**.
+
+3. **Performance:**  
+   - Fast per-SSTable scans without LSN checks.  
+   - Bloom filters and min/max key ranges allow skipping SSTables for `get` operations.
+
+4. **Consistency with industry:**  
+   - Mirrors RocksDB/LevelDB, Scylla, and Cassandra design.  
+   - Ensures that `get` and `scan` operations remain **correct and deterministic** across multiple SSTables.
 
 ---
 

@@ -1,2 +1,3 @@
-pub mod memtable;
-pub mod wal;
+mod memtable;
+mod sstable;
+mod wal;

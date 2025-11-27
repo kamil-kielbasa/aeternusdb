@@ -98,16 +98,16 @@ pub struct Memtable {
 #[derive(Debug, PartialEq, bincode::Encode, bincode::Decode, Clone)]
 pub struct MemtableEntry {
     /// The stored value. `None` indicates a deletion (tombstone).
-    value: Option<Vec<u8>>,
+    pub value: Option<Vec<u8>>,
 
     /// Logical timestamp in nanoseconds since UNIX epoch.
-    timestamp: u64,
+    pub timestamp: u64,
 
     /// Whether this entry represents a deletion.
-    is_delete: bool,
+    pub is_delete: bool,
 
     /// Log sequence number for ordering updates.
-    lsn: u64,
+    pub lsn: u64,
 }
 
 /// A record stored in the WAL and replayed into the memtable.
@@ -239,11 +239,19 @@ impl Memtable {
         let key = record.key;
         let value = record.value;
 
-        guard.tree.entry(key.clone()).or_insert_with(Vec::new).push(value);
+        guard
+            .tree
+            .entry(key.clone())
+            .or_insert_with(Vec::new)
+            .push(value);
 
         guard.approximate_size += record_size;
 
-        trace!("Put operation completed with LSN: {}, key: {}", lsn, HexKey(&key));
+        trace!(
+            "Put operation completed with LSN: {}, key: {}",
+            lsn,
+            HexKey(&key)
+        );
 
         Ok(())
     }
@@ -290,11 +298,19 @@ impl Memtable {
         let key = record.key;
         let value = record.value;
 
-        guard.tree.entry(key.clone()).or_insert_with(Vec::new).push(value);
+        guard
+            .tree
+            .entry(key.clone())
+            .or_insert_with(Vec::new)
+            .push(value);
 
         guard.approximate_size += record_size;
 
-        trace!("Delete operation completed with LSN: {}, key: {}", lsn, HexKey(&key));
+        trace!(
+            "Delete operation completed with LSN: {}, key: {}",
+            lsn,
+            HexKey(&key)
+        );
 
         Ok(())
     }
@@ -330,7 +346,11 @@ impl Memtable {
         start: &[u8],
         end: &[u8],
     ) -> Result<impl Iterator<Item = (Vec<u8>, MemtableEntry)>, MemtableError> {
-        trace!("scan() started with range. Start key: {} end key: {}", HexKey(start), HexKey(end));
+        trace!(
+            "scan() started with range. Start key: {} end key: {}",
+            HexKey(start),
+            HexKey(end)
+        );
 
         if start >= end {
             return Ok(Vec::new().into_iter());

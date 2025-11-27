@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
+    use crate::wal::{Wal, WalData, WalError};
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
-    use crate::wal::{Wal, WalData, WalError};
-    use std::io::{Write, Seek, SeekFrom};
-    use std::fs::OpenOptions;
 
     const WAL_CRC32_SIZE: usize = std::mem::size_of::<u32>();
     const WAL_HDR_SIZE: usize = 12;
