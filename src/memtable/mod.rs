@@ -73,6 +73,8 @@ pub enum MemtableError {
 // Memtable Core
 // ------------------------------------------------------------------------------------------------
 
+pub struct FrozenMemtable {}
+
 /// An in-memory, WAL-backed key-value store.
 ///
 /// The memtable maintains key-value pairs in a sorted [`BTreeMap`], allowing
