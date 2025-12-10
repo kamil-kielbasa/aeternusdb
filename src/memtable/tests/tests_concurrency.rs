@@ -8,7 +8,7 @@ mod concurrency_tests {
     #[test]
     fn test_concurrent_puts() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         let mut handles = Vec::new();
@@ -34,7 +34,7 @@ mod concurrency_tests {
     #[test]
     fn test_concurrent_gets_and_puts() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         let memtable_writer = Arc::clone(&memtable);
@@ -64,7 +64,7 @@ mod concurrency_tests {
     #[test]
     fn test_concurrent_puts_and_deletes() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         for i in 0..200 {
@@ -117,7 +117,7 @@ mod scan_concurrent_tests {
     #[test]
     fn test_scan_during_concurrent_puts() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         let mem_clone = Arc::clone(&memtable);
@@ -142,7 +142,7 @@ mod scan_concurrent_tests {
     #[test]
     fn test_scan_during_concurrent_deletes() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         for i in 0..50 {
@@ -171,7 +171,7 @@ mod scan_concurrent_tests {
     #[test]
     fn test_scan_with_multiple_concurrent_writers() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         let mut handles = vec![];

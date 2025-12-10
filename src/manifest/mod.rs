@@ -62,7 +62,7 @@ use tracing::{error, info, trace, warn};
 
 const SNAPSHOT_TMP_SUFFIX: &str = ".tmp";
 const SNAPSHOT_FILENAME: &str = "manifest.snapshot";
-const WAL_FILENAME: &str = "manifest.wal";
+const WAL_FILENAME: &str = "wal-000000.log";
 const U32_SIZE: usize = std::mem::size_of::<u32>();
 
 // ------------------------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ mod scan_tests {
     #[test]
     fn test_scan_full_range() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         for i in 0..10 {
@@ -24,7 +24,7 @@ mod scan_tests {
     #[test]
     fn test_scan_partial_range() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         for i in 0..10 {
@@ -42,7 +42,7 @@ mod scan_tests {
     #[test]
     fn test_scan_skips_deleted() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         for i in 0..5 {
@@ -66,7 +66,7 @@ mod scan_tests {
     #[test]
     fn test_scan_empty_memtable() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         let results: Vec<_> = memtable.scan(b"key0", b"key9").unwrap().collect();
@@ -76,7 +76,7 @@ mod scan_tests {
     #[test]
     fn test_scan_no_matching_keys() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal.bin");
+        let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         for i in 0..5 {

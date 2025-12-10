@@ -124,7 +124,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
 
-        let wal_path = temp.path().join("manifest.wal");
+        let wal_path = temp.path().join("wal-000000.log");
         let snapshot_path = temp.path().join("manifest.snapshot");
 
         {

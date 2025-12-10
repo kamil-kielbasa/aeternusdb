@@ -58,12 +58,13 @@ mod tests;
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use bincode::{config::standard, decode_from_slice, encode_to_vec};
 use crc32fast::Hasher as Crc32;
+use std::ffi::OsStr;
 use thiserror::Error;
 use tracing::{error, info, trace, warn};
 
@@ -127,6 +128,9 @@ pub struct WalHeader {
 
     /// Maximum record size (in bytes).
     pub max_record_size: u32,
+
+    /// Monotonically-increasing WAL sequence number (segment id).
+    pub wal_seq: u64,
 }
 
 impl WalHeader {
@@ -143,11 +147,12 @@ impl WalHeader {
     ///
     /// # Parameters
     /// - `max_record_size`: Maximum record size limit.
-    pub fn new(max_record_size: u32) -> Self {
+    pub fn new(max_record_size: u32, wal_seq: u64) -> Self {
         Self {
             magic: Self::MAGIC,
             version: Self::VERSION,
             max_record_size,
+            wal_seq,
         }
     }
 }
@@ -214,10 +219,15 @@ impl<T: WalData> Wal<T> {
 
         let config = standard().with_fixed_int_encoding();
 
+        let wal_seq = Self::parse_seq_from_path(path_ref)
+            .ok_or(WalError::Internal("WAL name incorrect".into()))?;
+
         // If file is empty, create and write a new header.
         let header = if file.metadata()?.len() == 0 {
-            let header =
-                WalHeader::new(max_record_size.unwrap_or(WalHeader::DEFAULT_MAX_RECORD_SIZE));
+            let header = WalHeader::new(
+                max_record_size.unwrap_or(WalHeader::DEFAULT_MAX_RECORD_SIZE),
+                wal_seq,
+            );
 
             let header_bytes = encode_to_vec(&header, config).map_err(WalError::Encode)?;
 
@@ -236,7 +246,7 @@ impl<T: WalData> Wal<T> {
             // Existing WAL → read and validate header + checksum.
             file.seek(SeekFrom::Start(0))?;
 
-            let sample = WalHeader::new(WalHeader::DEFAULT_MAX_RECORD_SIZE);
+            let sample = WalHeader::new(WalHeader::DEFAULT_MAX_RECORD_SIZE, 0);
             let sample_bytes = encode_to_vec(&sample, config).map_err(WalError::Encode)?;
             let header_len = sample_bytes.len();
 
@@ -267,6 +277,10 @@ impl<T: WalData> Wal<T> {
                 )));
             }
 
+            if header.wal_seq != wal_seq {
+                return Err(WalError::InvalidHeader("Invalid sequence number".into()));
+            }
+
             info!(
                 "Loaded WAL header from {} (max_record_size={})",
                 path_ref.display(),
@@ -284,6 +298,18 @@ impl<T: WalData> Wal<T> {
             header,
             _phantom: std::marker::PhantomData,
         })
+    }
+
+    /// Parse `wal_seq` from filename if it matches `wal-<seq>.log`.
+    fn parse_seq_from_path(path: &Path) -> Option<u64> {
+        let name = path.file_name().and_then(OsStr::to_str)?;
+        // Expect pattern wal-000001.log or wal-1.log etc.
+        if let Some(stripped) = name.strip_prefix("wal-") {
+            if let Some(seq_str) = stripped.strip_suffix(".log") {
+                return seq_str.parse::<u64>().ok();
+            }
+        }
+        None
     }
 
     /// Appends a single record to the WAL.
@@ -375,6 +401,28 @@ impl<T: WalData> Wal<T> {
 
         info!("Truncated WAL file: {}", self.path);
         Ok(())
+    }
+
+    pub fn rotate_next(&mut self) -> Result<u64, WalError> {
+        {
+            let guard = self
+                .inner_file
+                .lock()
+                .map_err(|_| WalError::Internal("Mutex poisoned".into()))?;
+            guard.sync_all()?;
+        }
+
+        let next_seq = self.header.wal_seq.saturating_add(1);
+
+        let cur_path = PathBuf::from(&self.path);
+        let dir = cur_path.parent().unwrap_or_else(|| Path::new("."));
+        let next_path = dir.join(format!("wal-{next_seq:06}.log"));
+
+        let mut new_wal = Wal::<T>::open(&next_path, Some(self.header.max_record_size))?;
+        new_wal.header.wal_seq = next_seq;
+        *self = new_wal;
+
+        Ok(next_seq)
     }
 
     /// Get the path of the underlying WAL file.
