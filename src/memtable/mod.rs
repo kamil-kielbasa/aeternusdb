@@ -405,6 +405,23 @@ impl Memtable {
             .filter_map(|(key, versions)| versions.last().cloned().map(|latest| (key, latest))))
     }
 
+    /// Override the current LSN counter with a recovered value.
+    ///
+    /// # Safety / Rules
+    /// - Must only be called during recovery **before any writes**.
+    /// - Ensures that future LSNs always increase beyond recovered state.
+    pub fn inject_max_lsn(&self, lsn: u64) {
+        // next_lsn always points to the *next available* LSN
+        self.next_lsn.store(lsn.saturating_add(1), Ordering::SeqCst);
+    }
+
+    /// Returns the highest assigned LSN so far.
+    ///
+    /// This returns `next_lsn - 1`, since `next_lsn` always stores the next unused sequence number.
+    pub fn max_lsn(&self) -> u64 {
+        self.next_lsn.load(Ordering::SeqCst).saturating_sub(1)
+    }
+
     /// Returns the current system timestamp in nanoseconds.
     ///
     /// Used to tag entries for ordering and diagnostics.
@@ -414,6 +431,49 @@ impl Memtable {
             .expect("system clock before UNIX epoch")
             .as_nanos() as u64
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Memtable recovery from WAL
+// ------------------------------------------------------------------------------------------------
+
+/// Recover a Memtable from a given WAL file path.
+/// Tracks the max LSN and injects it into the Memtable.
+pub fn recover_memtable_from_wal<P: AsRef<Path>>(
+    wal_path: P,
+    write_buffer_size: usize,
+) -> Result<Memtable, MemtableError> {
+    // 1. Create memtable (replays WAL internally)
+    let memtable = Memtable::new(&wal_path, None, write_buffer_size)?;
+    let mut max_lsn_seen = memtable.max_lsn();
+
+    // 2. Open WAL explicitly for replay
+    let wal = Wal::<MemtableRecord>::open(&wal_path, None)?;
+    let mut iter = wal.replay_iter()?;
+
+    while let Some(record_res) = iter.next() {
+        match record_res {
+            Ok(record) => {
+                max_lsn_seen = max_lsn_seen.max(record.value.lsn);
+                // Apply to Memtable; handle FlushRequired
+                let key = record.key.clone();
+                let value = record.value.value.clone().unwrap_or_default();
+                loop {
+                    match memtable.put(key.clone(), value.clone()) {
+                        Ok(_) => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            Err(WalError::ChecksumMismatch) => break,
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+    }
+
+    // 3. Inject max LSN to ensure monotonic sequence
+    memtable.inject_max_lsn(max_lsn_seen);
+
+    Ok(memtable)
 }
 
 // ------------------------------------------------------------------------------------------------
