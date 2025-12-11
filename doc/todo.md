@@ -14,21 +14,6 @@ Only one memtable is writable at any moment:
 
 FrozenMemtable contents remain stable and deterministic until flushed to SST.
 
-## 2. Flush all versions exactly as they appear in the memtable
-
-- Emit all point entries (PUTs and DELETEs) sorted by **(key ASC, seq DESC)**
-```rust
-BTreeMap<Key, BTreeMap<Reverse<Seq>, Value>>
-```
-
-- Emit all range tombstones sorted by **(start_key ASC, seq DESC)**
-```rust
-BTreeMap<StartKey, BTreeMap<Reverse<Seq>, Value>>
-```
-
-- Do **not** aggregate or collapse versions during flush.
-- Version collapsing happens **only during compaction**.
-
 ## 3. Maintain two separate sorted structures in the memtable
 
 - **Point entries**: skiplist ordered by **(key ASC, seq DESC)**

@@ -148,9 +148,14 @@ mod tests {
         assert_eq!(recovered.get(b"beta").unwrap(), Some(b"value2".to_vec()));
 
         // 5️⃣ Verify new writes continue LSN sequence
-        recovered.put(b"gamma".to_vec(), b"value3".to_vec()).unwrap();
+        recovered
+            .put(b"gamma".to_vec(), b"value3".to_vec())
+            .unwrap();
         assert_eq!(recovered.max_lsn(), lsn_after + 1);
-        assert_eq!(recovered.get(b"gamma").unwrap().unwrap(), b"value3".to_vec());
+        assert_eq!(
+            recovered.get(b"gamma").unwrap().unwrap(),
+            b"value3".to_vec()
+        );
     }
 
     #[test]

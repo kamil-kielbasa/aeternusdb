@@ -32,10 +32,13 @@ mod tests;
 // ------------------------------------------------------------------------------------------------
 
 use std::{
+    cmp::Reverse,
     collections::BTreeMap,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -129,7 +132,7 @@ struct MemtableRecord {
 /// Wrapped in an `RwLock` for concurrent readers.
 struct MemtableInner {
     /// Ordered key-value mapping.
-    tree: BTreeMap<Vec<u8>, Vec<MemtableEntry>>,
+    tree: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, MemtableEntry>>,
 
     /// Approximate total size of all entries in memory.
     approximate_size: usize,
@@ -182,7 +185,11 @@ impl Memtable {
             let key = record.key;
             let value = record.value;
 
-            inner.tree.entry(key).or_insert_with(Vec::new).push(value);
+            inner
+                .tree
+                .entry(key)
+                .or_insert_with(BTreeMap::new)
+                .insert(Reverse(value.lsn), value);
 
             inner.approximate_size += record_size;
         }
@@ -244,8 +251,8 @@ impl Memtable {
         guard
             .tree
             .entry(key.clone())
-            .or_insert_with(Vec::new)
-            .push(value);
+            .or_insert_with(BTreeMap::new)
+            .insert(Reverse(value.lsn), value);
 
         guard.approximate_size += record_size;
 
@@ -303,8 +310,8 @@ impl Memtable {
         guard
             .tree
             .entry(key.clone())
-            .or_insert_with(Vec::new)
-            .push(value);
+            .or_insert_with(BTreeMap::new)
+            .insert(Reverse(value.lsn), value);
 
         guard.approximate_size += record_size;
 
@@ -333,9 +340,9 @@ impl Memtable {
         let maybe_latest = guard
             .tree
             .get(key)
-            .and_then(|versions| versions.iter().max_by_key(|e| e.lsn).cloned());
+            .and_then(|versions| versions.values().next());
 
-        Ok(maybe_latest.and_then(|e| if !e.is_delete { e.value } else { None }))
+        Ok(maybe_latest.and_then(|e| if !e.is_delete { e.value.clone() } else { None }))
     }
 
     /// Scans a range of keys between `start` and `end`.
@@ -368,8 +375,8 @@ impl Memtable {
             .range(start.to_vec()..end.to_vec())
             .filter_map(|(key, versions)| {
                 versions
-                    .iter()
-                    .max_by_key(|e| e.lsn)
+                    .values()
+                    .next()
                     .cloned()
                     .map(|latest| (key.clone(), latest))
             })
@@ -398,11 +405,16 @@ impl Memtable {
         let old_tree = std::mem::take(&mut guard.tree);
         guard.approximate_size = 0;
 
+        let mut all_entries = Vec::new();
+        for (key, versions) in old_tree.iter() {
+            for entry in versions.values() {
+                all_entries.push((key.clone(), entry.clone()));
+            }
+        }
+
         info!("Memtable flushed successfully");
 
-        Ok(old_tree
-            .into_iter()
-            .filter_map(|(key, versions)| versions.last().cloned().map(|latest| (key, latest))))
+        Ok(all_entries.into_iter())
     }
 
     /// Override the current LSN counter with a recovered value.

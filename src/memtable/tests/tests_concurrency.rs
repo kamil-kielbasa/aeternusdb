@@ -95,14 +95,15 @@ mod concurrency_tests {
         let guard = memtable.inner.read().unwrap();
         for i in 0..100 {
             let key = format!("key{}", i).into_bytes();
-            let entry = guard.tree.get(&key).unwrap().last().unwrap();
+            let versions = guard.tree.get(&key).unwrap();
+            let entry = versions.values().next().unwrap();
             assert!(!entry.is_delete, "key {} should not be deleted", i);
         }
         for i in 100..200 {
             let key = format!("key{}", i).into_bytes();
             let versions = guard.tree.get(&key).unwrap();
-            let latest = versions.iter().max_by_key(|e| e.lsn).unwrap();
-            assert!(latest.is_delete || latest.value.is_some());
+            let entry = versions.values().next().unwrap();
+            assert!(entry.is_delete || entry.value.is_some());
         }
     }
 }
