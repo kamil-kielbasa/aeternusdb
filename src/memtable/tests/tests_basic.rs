@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::memtable::{Memtable, MemtableError, recover_memtable_from_wal};
+    use crate::memtable::{Memtable, MemtableError};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
