@@ -1,24 +1,28 @@
 //! # Memtable Module
 //!
-//! Implements an **in-memory key-value store** backed by a **write-ahead log (WAL)**.
+//! ## Design Invariants
 //!
-//! The `Memtable` is the mutable, in-memory layer of an LSM-based storage engine.
-//! It accepts writes, persists them to a WAL for durability, and provides fast
-//! point lookups and range scans. When the in-memory buffer exceeds a configured
-//! threshold, it is flushed to immutable on-disk SSTables.
+//! - All writes are WAL-first and assigned a monotonically increasing LSN.
+//! - The memtable may contain multiple versions per key; the highest-LSN
+//!   version is considered authoritative.
+//! - Deletes are represented via tombstones, not physical removal.
+//! - Range tombstones logically delete all keys in `[start, end)`
+//!   with lower LSNs.
+//! - Reads (`get`, `scan`) always resolve point entries against
+//!   range tombstones.
 //!
-//! ## Features
-//! - Durable via WAL-first writes
-//! - Concurrent readers with `RwLock`
-//! - In-memory versioned key tracking (supports deletes)
-//! - Range scans with inclusive start and exclusive end
-//! - Safe recovery on restart via WAL replay
+//! ## Flush Semantics
 //!
-//! ## Crash Safety
+//! - `iter_for_flush` returns a *logical snapshot* of the memtable state.
+//! - Returned records are sufficient to reconstruct the same memtable
+//!   state via WAL replay.
+//! - Flush iteration does **not** mutate or clear in-memory state.
 //!
-//! Every `put` and `delete` operation is appended to the WAL before being applied
-//! to the in-memory tree. Upon restart, the WAL is replayed to reconstruct the
-//! last consistent memtable state.
+//! ## Frozen Memtable
+//!
+//! - A `FrozenMemtable` is read-only.
+//! - It retains ownership of the WAL to guarantee durability until
+//!   data is persisted to SSTables.
 
 // ------------------------------------------------------------------------------------------------
 // Unit tests
@@ -47,12 +51,6 @@ use thiserror::Error;
 use tracing::{error, info, trace};
 
 // ------------------------------------------------------------------------------------------------
-// Constants
-// ------------------------------------------------------------------------------------------------
-
-const U32_SIZE: usize = std::mem::size_of::<u32>();
-
-// ------------------------------------------------------------------------------------------------
 // Error Types
 // ------------------------------------------------------------------------------------------------
 
@@ -76,16 +74,23 @@ pub enum MemtableError {
 // Memtable Core
 // ------------------------------------------------------------------------------------------------
 
-pub struct FrozenMemtable {}
-
-/// An in-memory, WAL-backed key-value store.
+/// The mutable, in-memory write buffer of the storage engine.
 ///
-/// The memtable maintains key-value pairs in a sorted [`BTreeMap`], allowing
-/// fast range queries. Every mutation is logged to the WAL to guarantee
-/// crash recovery.
+/// The memtable:
+/// - Accepts writes (`put`, `delete`, `delete_range`)
+/// - Persists all mutations to a WAL
+/// - Serves reads (`get`, `scan`)
+/// - Can be logically flushed via `iter_for_flush`
 ///
-/// Internally, each key may have multiple [`MemtableEntry`] versions
-/// (representing updates and deletes).
+/// Internally, the memtable stores **multiple versions per key** ordered
+/// by descending LSN. Resolution is deferred to read time.
+///
+/// # Concurrency
+/// - Writers acquire an exclusive lock
+/// - Readers may proceed concurrently
+///
+/// # Durability
+/// - Every mutation is appended to the WAL *before* being applied in memory
 pub struct Memtable {
     /// Thread-safe container for in-memory data and metadata.
     inner: Arc<RwLock<MemtableInner>>,
@@ -97,11 +102,14 @@ pub struct Memtable {
     next_lsn: AtomicU64,
 }
 
-/// A single version of a key in the memtable.
+/// A single versioned point entry stored in the memtable.
 ///
-/// Each entry represents either a live value or a tombstone (deletion).
+/// A key may have multiple `MemtableSingleEntry` versions, ordered by LSN.
+/// The highest-LSN entry is considered the latest.
+///
+/// Deletions are represented by tombstones (`is_delete = true`).
 #[derive(Debug, PartialEq, bincode::Encode, bincode::Decode, Clone)]
-pub struct MemtableEntry {
+pub struct MemtableSingleEntry {
     /// The stored value. `None` indicates a deletion (tombstone).
     pub value: Option<Vec<u8>>,
 
@@ -115,44 +123,93 @@ pub struct MemtableEntry {
     pub lsn: u64,
 }
 
-/// A record stored in the WAL and replayed into the memtable.
+/// A range tombstone that logically deletes keys in `[start, end)`.
 ///
-/// Each record consists of a key and its associated versioned value entry.
-#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
-struct MemtableRecord {
-    /// The record key (user key).
-    key: Vec<u8>,
+/// Range tombstones are versioned via LSN and may overlap.
+/// During reads, the highest-LSN tombstone covering a key
+/// takes precedence.
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+pub struct MemtableRangeTombstone {
+    /// Inclusive start key of the deleted range.
+    pub start: Vec<u8>,
 
-    /// The versioned entry metadata and value.
-    value: MemtableEntry,
+    /// Exclusive end key of the deleted range.
+    pub end: Vec<u8>,
+
+    /// Log Sequence Number of this tombstone.
+    pub lsn: u64,
+
+    /// Timestamp associated with this mutation.
+    pub timestamp: u64,
 }
 
-/// Internal shared memtable state.
+/// A logical WAL record representing a memtable mutation.
 ///
-/// Wrapped in an `RwLock` for concurrent readers.
-struct MemtableInner {
-    /// Ordered key-value mapping.
-    tree: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, MemtableEntry>>,
+/// These records:
+/// - Are appended to the WAL
+/// - Are replayed during recovery
+/// - Are emitted during memtable flush
+///
+/// Together, they form a complete, replayable history.
+#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
+pub enum MemtableRecord {
+    /// Insert or update a single key.
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        lsn: u64,
+        timestamp: u64,
+    },
 
-    /// Approximate total size of all entries in memory.
+    /// Delete a single key.
+    Delete {
+        key: Vec<u8>,
+        lsn: u64,
+        timestamp: u64,
+    },
+
+    /// Delete all keys in `[start, end)`.
+    RangeDelete {
+        start: Vec<u8>,
+        end: Vec<u8>,
+        lsn: u64,
+        timestamp: u64,
+    },
+}
+
+/// Internal shared state of the memtable.
+///
+/// This structure is protected by an `RwLock` and must never be
+/// accessed directly outside the memtable implementation.
+struct MemtableInner {
+    /// Point entries grouped by key, then ordered by descending LSN.
+    tree: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, MemtableSingleEntry>>,
+
+    /// Range tombstones indexed by start key and ordered by descending LSN.
+    range_tombstones: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, MemtableRangeTombstone>>,
+
+    /// Approximate in-memory footprint.
     approximate_size: usize,
 
-    /// Maximum allowed buffer size before a flush is required.
+    /// Configured maximum buffer size before flush is required.
     write_buffer_size: usize,
 }
 
 impl Memtable {
-    /// Creates a new [`Memtable`] instance backed by a WAL.
+    /// Creates a new mutable [`Memtable`] backed by a write-ahead log (WAL).
     ///
     /// # Arguments
     /// - `wal_path` — Path to the WAL file used for durability.
-    /// - `max_record_size` — Optional per-record size limit for the WAL.
-    /// - `write_buffer_size` — Maximum in-memory buffer size before requiring a flush.
+    /// - `max_record_size` — Optional maximum size of a single WAL record.
+    /// - `write_buffer_size` — Maximum in-memory size before a flush is required.
     ///
     /// # Behavior
-    /// On creation, the memtable replays the WAL file (if present) to restore
-    /// any previously persisted state. Each recovered record is inserted into
-    /// the in-memory B-tree, and the `next_lsn` is advanced accordingly.
+    /// - Replays the WAL (if present) to reconstruct the in-memory state.
+    /// - Restores the highest observed LSN and advances the internal counter.
+    /// - Subsequent writes will continue with monotonically increasing LSNs.
+    ///
+    /// # Crash Safety
+    /// WAL replay guarantees recovery to the last durable state after a crash.
     pub fn new<P: AsRef<Path>>(
         wal_path: P,
         max_record_size: Option<u32>,
@@ -164,6 +221,7 @@ impl Memtable {
 
         let mut inner = MemtableInner {
             tree: BTreeMap::new(),
+            range_tombstones: BTreeMap::new(),
             approximate_size: 0,
             write_buffer_size,
         };
@@ -174,24 +232,89 @@ impl Memtable {
         for record in records {
             let record: MemtableRecord = record?;
 
-            if record.value.lsn > max_lsn_seen {
-                max_lsn_seen = record.value.lsn;
+            match record {
+                MemtableRecord::Put {
+                    key,
+                    value,
+                    lsn,
+                    timestamp,
+                } => {
+                    let record_size =
+                        std::mem::size_of::<MemtableSingleEntry>() + key.len() + value.len();
+                    inner.approximate_size += record_size;
+
+                    if lsn > max_lsn_seen {
+                        max_lsn_seen = lsn;
+                    }
+
+                    let record_value = MemtableSingleEntry {
+                        value: Some(value),
+                        timestamp,
+                        is_delete: false,
+                        lsn,
+                    };
+
+                    inner
+                        .tree
+                        .entry(key)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(Reverse(record_value.lsn), record_value);
+                }
+
+                MemtableRecord::Delete {
+                    key,
+                    lsn,
+                    timestamp,
+                } => {
+                    let record_size = std::mem::size_of::<MemtableSingleEntry>() + key.len();
+                    inner.approximate_size += record_size;
+
+                    if lsn > max_lsn_seen {
+                        max_lsn_seen = lsn;
+                    }
+
+                    let record_value = MemtableSingleEntry {
+                        value: None,
+                        timestamp,
+                        is_delete: true,
+                        lsn,
+                    };
+
+                    inner
+                        .tree
+                        .entry(key)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(Reverse(record_value.lsn), record_value);
+                }
+
+                MemtableRecord::RangeDelete {
+                    start,
+                    end,
+                    lsn,
+                    timestamp,
+                } => {
+                    let record_size =
+                        std::mem::size_of::<MemtableRangeTombstone>() + start.len() + end.len();
+                    inner.approximate_size += record_size;
+
+                    if lsn > max_lsn_seen {
+                        max_lsn_seen = lsn;
+                    }
+
+                    let record_value = MemtableRangeTombstone {
+                        start,
+                        end,
+                        lsn,
+                        timestamp,
+                    };
+
+                    inner
+                        .range_tombstones
+                        .entry(record_value.start.clone())
+                        .or_insert_with(BTreeMap::new)
+                        .insert(Reverse(record_value.lsn), record_value);
+                }
             }
-
-            trace!("Replaying WAL record");
-
-            let record_size = U32_SIZE + std::mem::size_of::<MemtableRecord>() + U32_SIZE;
-
-            let key = record.key;
-            let value = record.value;
-
-            inner
-                .tree
-                .entry(key)
-                .or_insert_with(BTreeMap::new)
-                .insert(Reverse(value.lsn), value);
-
-            inner.approximate_size += record_size;
         }
 
         info!(
@@ -206,12 +329,12 @@ impl Memtable {
         })
     }
 
-    /// Inserts or updates a key-value pair in the memtable.
+    /// Inserts or updates a key with a new value.
     ///
     /// # Behavior
-    /// - The operation is first appended to the WAL (write-ahead).
-    /// - Then, it is applied to the in-memory B-tree.
-    /// - Each record is assigned a unique LSN for ordering.
+    /// - The mutation is first appended to the WAL (write-ahead).
+    /// - The entry is then applied to the in-memory balanced tree.
+    /// - A unique, monotonically increasing LSN is assigned.
     pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), MemtableError> {
         trace!("put() started, key: {}", HexKey(&key));
 
@@ -220,16 +343,14 @@ impl Memtable {
         }
 
         let lsn = self.next_lsn.fetch_add(1, Ordering::SeqCst);
+        let timestamp = Self::current_timestamp();
 
-        let record_size = std::mem::size_of::<MemtableEntry>() + key.len() + value.len();
-        let record = MemtableRecord {
-            key,
-            value: MemtableEntry {
-                value: Some(value),
-                timestamp: Self::current_timestamp(),
-                is_delete: false,
-                lsn,
-            },
+        let record_size = std::mem::size_of::<MemtableSingleEntry>() + key.len() + value.len();
+        let record = MemtableRecord::Put {
+            key: key.clone(),
+            value: value.clone(),
+            timestamp,
+            lsn,
         };
 
         let mut guard = self.inner.write().map_err(|_| {
@@ -245,8 +366,12 @@ impl Memtable {
         self.wal.append(&record)?;
 
         // 2. In-memory update
-        let key = record.key;
-        let value = record.value;
+        let value = MemtableSingleEntry {
+            value: Some(value),
+            timestamp,
+            is_delete: false,
+            lsn,
+        };
 
         guard
             .tree
@@ -265,12 +390,12 @@ impl Memtable {
         Ok(())
     }
 
-    /// Deletes a key (inserts a tombstone entry).
+    /// Deletes a key by inserting a tombstone entry.
     ///
     /// # Behavior
-    /// A tombstone is written to the WAL and inserted in memory.
-    /// The key will still exist in the B-tree but its latest version will be
-    /// marked with `is_delete = true`.
+    /// - Writes a delete record to the WAL.
+    /// - Inserts a tombstone with a higher LSN than any previous value.
+    /// - The key remains in the memtable but resolves to `None`.
     pub fn delete(&self, key: Vec<u8>) -> Result<(), MemtableError> {
         trace!("delete() started, key: {}", HexKey(&key));
 
@@ -279,16 +404,13 @@ impl Memtable {
         }
 
         let lsn = self.next_lsn.fetch_add(1, Ordering::SeqCst);
+        let timestamp = Self::current_timestamp();
 
-        let record_size = std::mem::size_of::<MemtableEntry>() + key.len();
-        let record = MemtableRecord {
-            key,
-            value: MemtableEntry {
-                value: None,
-                timestamp: Self::current_timestamp(),
-                is_delete: true,
-                lsn,
-            },
+        let record_size = std::mem::size_of::<MemtableSingleEntry>() + key.len();
+        let record = MemtableRecord::Delete {
+            key: key.clone(),
+            lsn,
+            timestamp,
         };
 
         let mut guard = self.inner.write().map_err(|_| {
@@ -304,8 +426,12 @@ impl Memtable {
         self.wal.append(&record)?;
 
         // 2. In-memory update
-        let key = record.key;
-        let value = record.value;
+        let value = MemtableSingleEntry {
+            value: None,
+            timestamp,
+            is_delete: true,
+            lsn,
+        };
 
         guard
             .tree
@@ -324,11 +450,84 @@ impl Memtable {
         Ok(())
     }
 
-    /// Retrieves the latest value for a given key.
+    /// Deletes all keys in the range `[start, end)`.
+    ///
+    /// # Range Semantics
+    /// - Inclusive `start`
+    /// - Exclusive `end`
+    ///
+    /// # Behavior
+    /// - Writes a range tombstone to the WAL.
+    /// - The tombstone shadows point entries with lower LSNs.
+    pub fn delete_range(&self, start: Vec<u8>, end: Vec<u8>) -> Result<(), MemtableError> {
+        trace!(
+            "delete_range() started, start key: {}, end key: {}",
+            HexKey(&start),
+            HexKey(&end)
+        );
+
+        if start.is_empty() || end.is_empty() {
+            return Err(MemtableError::Internal(
+                "Start or end key is empty".to_string(),
+            ));
+        }
+
+        let lsn = self.next_lsn.fetch_add(1, Ordering::SeqCst);
+        let timestamp = Self::current_timestamp();
+
+        let record_size = std::mem::size_of::<MemtableRangeTombstone>() + start.len() + end.len();
+        let record = MemtableRecord::RangeDelete {
+            start: start.clone(),
+            end: end.clone(),
+            lsn,
+            timestamp,
+        };
+
+        let mut guard = self.inner.write().unwrap();
+
+        if guard.approximate_size + record_size > guard.write_buffer_size {
+            return Err(MemtableError::FlushRequired);
+        }
+
+        // 1. Wal first (crash safety)
+        self.wal.append(&record)?;
+
+        // 2. In-memory update
+        let value = MemtableRangeTombstone {
+            start: start.to_vec(),
+            end: end.to_vec(),
+            lsn,
+            timestamp,
+        };
+
+        guard
+            .range_tombstones
+            .entry(start.to_vec())
+            .or_insert_with(BTreeMap::new)
+            .insert(Reverse(value.lsn), value);
+
+        guard.approximate_size += record_size;
+
+        trace!(
+            "Delete operation completed with LSN: {}, start key: {}, end key: {}",
+            lsn,
+            HexKey(&start),
+            HexKey(&end),
+        );
+
+        Ok(())
+    }
+
+    /// Retrieves the latest visible value for a key.
+    ///
+    /// Resolution rules:
+    /// 1. Select highest-LSN point entry
+    /// 2. Check all covering range tombstones
+    /// 3. If a tombstone has a higher LSN, the key is considered deleted
     ///
     /// # Returns
-    /// - `Ok(Some(value))` if the key exists and is not deleted.
-    /// - `Ok(None)` if the key does not exist or has been deleted.
+    /// - `Ok(Some(value))` if visible
+    /// - `Ok(None)` if deleted or not present
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, MemtableError> {
         trace!("get() started, key: {}", HexKey(key));
 
@@ -337,24 +536,52 @@ impl Memtable {
             MemtableError::Internal("RwLock poisoned".into())
         })?;
 
-        let maybe_latest = guard
+        // --- STEP 1: Highest-LSN point entry ---
+        let point_opt = guard
             .tree
             .get(key)
             .and_then(|versions| versions.values().next());
 
-        Ok(maybe_latest.and_then(|e| if !e.is_delete { e.value.clone() } else { None }))
+        let point = match point_opt {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // --- STEP 2: check range tombstones ---
+        let mut tombstone_lsn = 0;
+
+        for (_start, versions) in guard.range_tombstones.range(..=key.to_vec()) {
+            // highest LSN tombstone for this start
+            if let Some(t) = versions.values().next() {
+                if t.start.as_slice() <= key && key < t.end.as_slice() {
+                    tombstone_lsn = tombstone_lsn.max(t.lsn);
+                }
+            }
+        }
+
+        // --- STEP 3: final resolution ---
+        if tombstone_lsn > point.lsn {
+            return Ok(None); // deleted by tombstone
+        }
+
+        Ok(point.value.clone())
     }
 
-    /// Scans a range of keys between `start` and `end`.
+    /// Performs an ordered range scan over `[start, end)`.
     ///
-    /// # Range Semantics
-    /// - **Inclusive start**, **exclusive end**
-    /// - Keys are returned in sorted order.
+    /// Each key is resolved against:
+    /// - its latest point entry
+    /// - all applicable range tombstones
+    ///
+    /// Deleted keys are omitted from the result.
+    ///
+    /// # Complexity
+    /// O(N * R) where R is the number of overlapping range tombstones.
     pub fn scan(
         &self,
         start: &[u8],
         end: &[u8],
-    ) -> Result<impl Iterator<Item = (Vec<u8>, MemtableEntry)>, MemtableError> {
+    ) -> Result<impl Iterator<Item = (Vec<u8>, MemtableSingleEntry)>, MemtableError> {
         trace!(
             "scan() started with range. Start key: {} end key: {}",
             HexKey(start),
@@ -370,51 +597,101 @@ impl Memtable {
             MemtableError::Internal("RwLock poisoned".into())
         })?;
 
-        let records: Vec<_> = guard
-            .tree
-            .range(start.to_vec()..end.to_vec())
-            .filter_map(|(key, versions)| {
-                versions
-                    .values()
-                    .next()
-                    .cloned()
-                    .map(|latest| (key.clone(), latest))
-            })
-            .filter(|(_, entry)| !entry.is_delete)
-            .collect();
+        let mut records = Vec::new();
+
+        for (key, versions) in guard.tree.range(start.to_vec()..end.to_vec()) {
+            let Some(point) = versions.values().next() else {
+                continue;
+            };
+
+            if point.is_delete {
+                continue;
+            }
+
+            let mut tombstone_lsn = 0;
+            for (_start, t_versions) in guard.range_tombstones.range(..=key.clone()) {
+                // highest LSN tombstone for this start
+                if let Some(t) = t_versions.values().next() {
+                    if t.start.as_slice() <= key.as_slice() && key.as_slice() < t.end.as_slice() {
+                        tombstone_lsn = tombstone_lsn.max(t.lsn);
+                    }
+                }
+            }
+
+            if tombstone_lsn > point.lsn {
+                continue; // deleted by tombstone
+            }
+
+            records.push((key.clone(), point.clone()));
+        }
 
         Ok(records.into_iter())
     }
 
-    /// Flushes the current memtable contents, consuming all in-memory data.
+    /// Returns a logical snapshot of the memtable suitable for flushing.
     ///
-    /// # Behavior
-    /// - Returns an iterator over all latest (non-deleted and deleted) entries.
-    /// - Clears the internal tree and resets memory usage tracking.
+    /// The iterator emits:
+    /// - The latest version of every point key (put or delete)
+    /// - **All** range tombstones
     ///
-    /// This operation is typically followed by writing entries to
-    /// an immutable SSTable on disk.
-    pub fn flush(&self) -> Result<impl Iterator<Item = (Vec<u8>, MemtableEntry)>, MemtableError> {
-        info!("Flushing memtable");
-
-        let mut guard = self.inner.write().map_err(|_| {
-            error!("Read-write lock poisoned during flush");
+    /// # Guarantees
+    /// - No filtering based on tombstone interaction
+    /// - Returned records are sufficient to rebuild the same state
+    /// - Does not mutate in-memory state
+    ///
+    /// # Intended Use
+    /// This iterator is consumed by the SSTable writer.
+    pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = MemtableRecord>, MemtableError> {
+        let guard = self.inner.read().map_err(|_| {
+            error!("Read-write lock poisoned during iter_for_flush");
             MemtableError::Internal("Read-write lock poisoned".into())
         })?;
 
-        let old_tree = std::mem::take(&mut guard.tree);
-        guard.approximate_size = 0;
+        let mut records = Vec::new();
 
-        let mut all_entries = Vec::new();
-        for (key, versions) in old_tree.iter() {
-            for entry in versions.values() {
-                all_entries.push((key.clone(), entry.clone()));
+        for (key, versions) in guard.tree.iter() {
+            if let Some(entry) = versions.values().next() {
+                let record = if entry.is_delete {
+                    MemtableRecord::Delete {
+                        key: key.clone(),
+                        lsn: entry.lsn,
+                        timestamp: entry.timestamp,
+                    }
+                } else {
+                    MemtableRecord::Put {
+                        key: key.clone(),
+                        value: entry.value.clone().unwrap(),
+                        lsn: entry.lsn,
+                        timestamp: entry.timestamp,
+                    }
+                };
+                records.push(record);
             }
         }
 
-        info!("Memtable flushed successfully");
+        for (start, versions) in guard.range_tombstones.iter() {
+            for entry in versions.values() {
+                let record = MemtableRecord::RangeDelete {
+                    start: start.clone(),
+                    end: entry.end.clone(),
+                    lsn: entry.lsn,
+                    timestamp: entry.timestamp,
+                };
+                records.push(record);
+            }
+        }
 
-        Ok(all_entries.into_iter())
+        Ok(records.into_iter())
+    }
+
+    /// Converts this mutable memtable into an immutable [`FrozenMemtable`].
+    ///
+    /// # Behavior
+    /// - Consumes `self`, preventing any further writes.
+    /// - Preserves ownership of the WAL to keep it alive during flushing.
+    /// - Exposes only read-only operations.
+    pub fn frozen(self) -> Result<FrozenMemtable, MemtableError> {
+        Ok(FrozenMemtable::new(self))
     }
 
     /// Override the current LSN counter with a recovered value.
@@ -442,6 +719,49 @@ impl Memtable {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before UNIX epoch")
             .as_nanos() as u64
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Frozen Memtable
+// ------------------------------------------------------------------------------------------------
+
+/// An immutable, read-only view of a memtable.
+///
+/// A frozen memtable:
+/// - Exposes only read APIs
+/// - Retains ownership of the WAL
+/// - Prevents further mutation by construction
+///
+/// This type represents a memtable that is in the process of being flushed
+/// to an on-disk SSTable.
+pub struct FrozenMemtable {
+    memtable: Memtable,
+}
+
+impl FrozenMemtable {
+    /// Creates a new frozen memtable by opening and replaying a WAL.
+    pub fn new(memtable: Memtable) -> Self {
+        Self { memtable }
+    }
+
+    /// Retrieves the latest visible value for a key.
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, MemtableError> {
+        self.memtable.get(key)
+    }
+
+    /// Performs a range scan over the frozen memtable.
+    pub fn scan(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<impl Iterator<Item = (Vec<u8>, MemtableSingleEntry)>, MemtableError> {
+        self.memtable.scan(start, end)
+    }
+
+    /// Returns all records required to materialize this memtable into an SSTable.
+    pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = MemtableRecord>, MemtableError> {
+        self.memtable.iter_for_flush()
     }
 }
 
