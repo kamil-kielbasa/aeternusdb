@@ -96,7 +96,7 @@ pub struct Memtable {
     inner: Arc<RwLock<MemtableInner>>,
 
     /// Associated write-ahead log for durability.
-    wal: Wal<MemtableRecord>,
+    pub wal: Wal<MemtableRecord>,
 
     /// Monotonic log sequence number (LSN) for version ordering.
     next_lsn: AtomicU64,
@@ -736,13 +736,17 @@ impl Memtable {
 /// This type represents a memtable that is in the process of being flushed
 /// to an on-disk SSTable.
 pub struct FrozenMemtable {
-    memtable: Memtable,
+    pub memtable: Memtable,
+    pub creation_timestamp: u64,
 }
 
 impl FrozenMemtable {
     /// Creates a new frozen memtable by opening and replaying a WAL.
     pub fn new(memtable: Memtable) -> Self {
-        Self { memtable }
+        Self {
+            memtable,
+            creation_timestamp: Memtable::current_timestamp(),
+        }
     }
 
     /// Retrieves the latest visible value for a key.
@@ -762,6 +766,11 @@ impl FrozenMemtable {
     /// Returns all records required to materialize this memtable into an SSTable.
     pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = MemtableRecord>, MemtableError> {
         self.memtable.iter_for_flush()
+    }
+
+    /// Returns the highest assigned LSN so far.
+    pub fn max_lsn(&self) -> u64 {
+        self.memtable.max_lsn()
     }
 }
 

@@ -2,18 +2,36 @@
 //!
 //!
 
+use std::fs;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 
-use crossbeam;
 use thiserror::Error;
 
-use crate::manifest::Manifest;
-use crate::memtable::{FrozenMemtable, Memtable, MemtableError};
+use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
+use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableRecord};
+use crate::sstable::{self, SSTable, SSTableError};
+
+#[cfg(test)]
+mod tests;
+
+pub const MANIFEST_DIR: &str = "manifest";
+pub const MEMTABLE_DIR: &str = "memtables";
+pub const SSTABLE_DIR: &str = "sstables";
 
 #[derive(Debug, Error)]
 pub enum EngineError {
+    #[error("Manifest error: {0}")]
+    Manifest(#[from] ManifestError),
+
     #[error("Memtable error: {0}")]
     Memtable(#[from] MemtableError),
+
+    #[error("SSTable error: {0}")]
+    SSTable(#[from] SSTableError),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 
     #[error("Internal error: {0}")]
     Internal(String),
@@ -24,10 +42,10 @@ pub struct EngineConfig {
     pub write_buffer_size: usize,
 
     /// Lower bound multiplier for bucket size range ([avg × bucket_low, avg × bucket_high])
-    pub bucket_low: usize,
+    pub bucket_low: f64,
 
     /// Upper bound multiplier for bucket size range.
-    pub bucket_high: usize,
+    pub bucket_high: f64,
 
     /// Min size (MB) for regular buckets; smaller go to "small" bucket.
     pub min_sstable_size: usize,
@@ -39,7 +57,7 @@ pub struct EngineConfig {
     pub max_threshold: usize,
 
     /// Ratio of droppable tombstones to trigger tombstone compaction.
-    pub tombstone_threshold: usize,
+    pub tombstone_threshold: f64,
 
     /// Min SSTable age (seconds) for tombstone compaction.
     pub tombstone_compaction_interval: usize,
@@ -48,7 +66,7 @@ pub struct EngineConfig {
     pub thread_pool_size: usize,
 }
 
-pub struct Engine {
+struct EngineInner {
     /// Persistent manifest for this engine (keeps track of SSTables, generations, etc).
     manifest: Manifest,
 
@@ -57,7 +75,10 @@ pub struct Engine {
 
     /// Frozen memtables waiting to be flushed to SSTable.
     /// We keep them in memory for reads until flush completes.
-    frozen: crossbeam::queue::SegQueue<FrozenMemtable>,
+    frozen: Vec<FrozenMemtable>,
+
+    /// Loaded SSTables.
+    sstables: Vec<SSTable>,
 
     /// Path where engine will be mounted.
     data_dir: String,
@@ -66,129 +87,332 @@ pub struct Engine {
     config: EngineConfig,
 }
 
+pub struct Engine {
+    inner: Arc<RwLock<EngineInner>>,
+}
+
 impl Engine {
     pub fn open(path: impl AsRef<Path>, config: EngineConfig) -> Result<Self, EngineError> {
         /// 1. Load or create manifest.
-        //
-        //    - Parse manifest file and rebuild list of SSTables and their levels.
-        //    - Read last persisted LSN from manifest.
-        //
-        //    IMPORTANT:
-        //    The manifest is authoritative for:
-        //      - which SSTables exist
-        //      - file UUIDs and levels
-        //      - last_flushed_lsn or last_committed_lsn
-        //
-        //    You **cannot** rely on directory listing for SSTables' validity.
+        let manifest = Manifest::open(&path)?;
+        let manifest_last_lsn = manifest.get_last_lsn()?;
 
-        // 2. Discover existing WAL files.
-        //
-        //    - Scan directory for wal-*.log.
-        //    - Sort by increasing UUID (or timestamp).
-        //    - Read each WAL header (optional but typical: contains start_lsn).
-        //    - Peek into the tail of each WAL to determine last LSN recorded.
-        //
-        //    NOTE:
-        //      WALs MUST be scanned **before** SSTables,
-        //      because WALs determine how much of state must be replayed.
+        // 2. Discover existing WAL files and load active/frozen WAL info from manifest.
+        let active_wal_nr = manifest.get_active_wal()?;
+        let active_wal_path = format!("wal-{:06}.log", active_wal_nr);
+        let memtable = Memtable::new(active_wal_path, None, config.write_buffer_size)?;
 
-        // 3. Determine WAL roles.
-        //
-        //    - For each WAL:
-        //        let wal_end_lsn = wal.compute_end_lsn().
-        //
-        //        if wal_end_lsn <= manifest.last_persisted_lsn:
-        //            safe to delete: all updates are already flushed
-        //            delete WAL file.
-        //            continue;
-        //
-        //        // WAL contains unflushed data:
-        //        keep this WAL.
-        //
-        //    - After filtering, sort remaining WALs:
-        //        last WAL → active WAL → active memtable
-        //        any others → frozen WALs → frozen memtables
-        //
-        //    NOTE:
-        //      It's okay if you have zero frozen WALs most of the time.
-        //      Frozen WALs appear only if engine crashed
-        //      while there were multiple memtables awaiting flush.
+        let frozen_wals = manifest.get_frozen_wals()?;
+        let mut frozen_memtables = Vec::new();
+        for wal_nr in frozen_wals {
+            let frozen_wal_path = format!("wal-{:06}.log", wal_nr);
+            let memtable = Memtable::new(frozen_wal_path, None, config.write_buffer_size)?;
+            frozen_memtables.push(memtable.frozen()?);
+        }
 
-        // 4. Load active memtable and frozen memtables.
-        //
-        //    - For each frozen WAL:
-        //        create Memtable::from_wal() (full replay)
-        //    - For active WAL:
-        //        create active memtable and replay WAL
-        //
-        //    IMPORTANT:
-        //      memtable ← WAL is NOT optional.
-        //      Memtable must reflect exactly the contents of its WAL.
+        // 3. Diccover existing SSTables on disk and remove orphans.
+        let sstables = manifest.get_sstables()?;
 
-        // 5. Discover existing SSTable files.
-        //
-        //    - List *.sst in directory.
-        //    - If SSTable exists on disk but not listed in manifest:
-        //        delete it (orphan file).
-        //
-        //    NOTE:
-        //      Manifest is ALWAYS authoritative.
-        //      If SSTable is not in manifest → treat as garbage.
+        for entry in fs::read_dir(&path)? {
+            let entry = entry?;
+            let file_path = entry.path();
 
-        // 6. Load list of SSTables from manifest.
-        //
-        //    - For each SSTable UUID in manifest:
-        //        SSTable::open(uuid)
-        //
-        //    OPTIONAL BUT RECOMMENDED:
-        //      Validate SSTable metadata header (start_lsn, end_lsn)
-        //      to ensure it matches manifest.
+            if file_path.is_file() && file_path.extension().and_then(|s| s.to_str()) == Some("sst")
+            {
+                if let Some(file_name) = file_path.file_name().and_then(|s| s.to_str()) {
+                    if let Some(id) = file_name
+                        .strip_prefix("sst-")
+                        .and_then(|s| s.strip_suffix(".sst"))
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        if !sstables.iter().any(|entry| entry.id == id) {
+                            fs::remove_file(&file_path)?;
+                        }
+                    }
+                }
+            }
+        }
 
-        // 7. Compute global LSN.
-        //
-        //    global_lsn = max(
-        //        manifest.last_lsn,
-        //        max_lsn_in_active_memtable,
-        //        max_lsn_in_frozen_memtables,
-        //        max_lsn_in_sstable_headers (optional, but correct)
-        //    )
-        //
-        //    next_lsn = global_lsn + 1
-        //
-        //    Set engine.next_lsn = AtomicU64(next_lsn).
-        //
-        //    NOTE:
-        //      next_lsn MUST be greater than everything that already exists
-        //      in WALs or SSTables.
-        //
-        //      LSN must be strictly monotonic across engine restarts.
+        // 4. Load SSTables from manifest.
+        let mut sstable_handles = Vec::new();
+        for sstable_entry in sstables {
+            let path = format!("sstable-{}.sst", sstable_entry.id);
+            let sstable = SSTable::open(&path)?;
+            sstable_handles.push(sstable);
+        }
 
-        // 8. Create thread pool for flushes and compaction.
-        //
-        //    - flush workers: apply memtable → WAL → SSTable
-        //    - compaction workers: merge SSTables according to LSM policy
-        unimplemented!()
+        // 5. Compute max LSN in active memtable.
+        let mut max_lsn = manifest_last_lsn;
+
+        if memtable.max_lsn() > max_lsn {
+            max_lsn = memtable.max_lsn();
+        }
+
+        for frozen in frozen_memtables.iter() {
+            if frozen.max_lsn() > max_lsn {
+                max_lsn = frozen.max_lsn();
+            }
+        }
+
+        for sstable in sstable_handles.iter() {
+            if sstable.properties.max_lsn > max_lsn {
+                max_lsn = sstable.properties.max_lsn;
+            }
+        }
+
+        if memtable.max_lsn() != max_lsn {
+            memtable.inject_max_lsn(max_lsn + 1);
+        }
+
+        // Sort frozen memtables by creation timestamp, newest first
+        frozen_memtables.sort_by(|a, b| b.creation_timestamp.cmp(&a.creation_timestamp));
+
+        // Sort sstables by creation timestamp, newest first
+        sstable_handles.sort_by(|a, b| {
+            b.properties
+                .creation_timestamp
+                .cmp(&a.properties.creation_timestamp)
+        });
+
+        let inner = EngineInner {
+            manifest,
+            active: memtable,
+            frozen: frozen_memtables,
+            sstables: sstable_handles,
+            data_dir: path.as_ref().to_string_lossy().to_string(),
+            config,
+        };
+
+        Ok(Self {
+            inner: Arc::new(RwLock::new(inner)),
+        })
     }
 
     pub fn close(&self) -> Result<(), EngineError> {
-        // PSEUDOCODE:
-        // 1. Gracefully shutdown:
-        //    - wait for flushes
-        //    - fsync manifest
-        //    - close WAL's
-        unimplemented!()
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        // 1. Flush any remaining frozen memtables to SSTables
+        while !inner.frozen.is_empty() {
+            Self::flush_frozen_to_sstable_inner(&mut inner)?;
+        }
+
+        // 2. Checkpoint the manifest to create a snapshot
+        let max_lsn = inner.active.max_lsn();
+        inner.manifest.update_lsn(max_lsn)?;
+        inner.manifest.checkpoint()?;
+
+        // 3. Fsync directories to ensure metadata is durable
+        let manifest_dir = format!("{}/{}", inner.data_dir, MANIFEST_DIR);
+        let memtable_dir = format!("{}/{}", inner.data_dir, MEMTABLE_DIR);
+        let sstable_dir = format!("{}/{}", inner.data_dir, SSTABLE_DIR);
+
+        // Fsync each directory
+        for dir_path in [&manifest_dir, &memtable_dir, &sstable_dir] {
+            if let Ok(dir) = fs::File::open(dir_path) {
+                dir.sync_all()?;
+            }
+        }
+
+        // 4. Fsync the root data directory
+        if let Ok(root) = fs::File::open(&inner.data_dir) {
+            root.sync_all()?;
+        }
+
+        Ok(())
     }
 
     pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), EngineError> {
-        unimplemented!()
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        if !inner.frozen.is_empty() {
+            Self::flush_frozen_to_sstable_inner(&mut inner)?;
+        }
+
+        match inner.active.put(key.clone(), value.clone()) {
+            Ok(()) => Ok(()),
+
+            Err(MemtableError::FlushRequired) => {
+                // Get WAL ID before moving the memtable
+                let frozen_wal_id = inner.active.wal.header.wal_seq;
+                let new_active_wal_id = frozen_wal_id + 1;
+
+                // Create new active memtable
+                let new_active = Memtable::new(
+                    format!(
+                        "{}/{}/wal-{:06}.log",
+                        inner.data_dir, MEMTABLE_DIR, new_active_wal_id
+                    ),
+                    None,
+                    inner.config.write_buffer_size,
+                )?;
+
+                // Swap out the old active memtable and freeze it
+                let old_active = std::mem::replace(&mut inner.active, new_active);
+                let frozen = old_active.frozen()?;
+                // Insert at beginning to maintain sorted order (newest first)
+                inner.frozen.insert(0, frozen);
+
+                inner.manifest.add_frozen_wal(frozen_wal_id)?;
+                inner.manifest.set_active_wal(new_active_wal_id)?;
+
+                inner.active.put(key, value)?;
+
+                let max_lsn = inner.active.max_lsn();
+                inner.manifest.update_lsn(max_lsn)?;
+
+                Ok(())
+            }
+
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn delete(&self, key: Vec<u8>) -> Result<(), EngineError> {
-        unimplemented!()
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        if !inner.frozen.is_empty() {
+            Self::flush_frozen_to_sstable_inner(&mut inner)?;
+        }
+
+        match inner.active.delete(key.clone()) {
+            Ok(()) => Ok(()),
+
+            Err(MemtableError::FlushRequired) => {
+                // Get WAL ID before moving the memtable
+                let frozen_wal_id = inner.active.wal.header.wal_seq;
+                let new_active_wal_id = frozen_wal_id + 1;
+
+                // Create new active memtable
+                let new_active = Memtable::new(
+                    format!(
+                        "{}/{}/wal-{:06}.log",
+                        inner.data_dir, MEMTABLE_DIR, new_active_wal_id
+                    ),
+                    None,
+                    inner.config.write_buffer_size,
+                )?;
+
+                // Swap out the old active memtable and freeze it
+                let old_active = std::mem::replace(&mut inner.active, new_active);
+                let frozen = old_active.frozen()?;
+                // Insert at beginning to maintain sorted order (newest first)
+                inner.frozen.insert(0, frozen);
+
+                inner.manifest.add_frozen_wal(frozen_wal_id)?;
+                inner.manifest.set_active_wal(new_active_wal_id)?;
+
+                inner.active.delete(key)?;
+
+                let max_lsn = inner.active.max_lsn();
+                inner.manifest.update_lsn(max_lsn)?;
+
+                Ok(())
+            }
+
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn delete_range(&self, start_key: Vec<u8>, end_key: Vec<u8>) -> Result<(), EngineError> {
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        if !inner.frozen.is_empty() {
+            Self::flush_frozen_to_sstable_inner(&mut inner)?;
+        }
+
+        match inner
+            .active
+            .delete_range(start_key.clone(), end_key.clone())
+        {
+            Ok(()) => Ok(()),
+
+            Err(MemtableError::FlushRequired) => {
+                // Get WAL ID before moving the memtable
+                let frozen_wal_id = inner.active.wal.header.wal_seq;
+                let new_active_wal_id = frozen_wal_id + 1;
+
+                // Create new active memtable
+                let new_active = Memtable::new(
+                    format!(
+                        "{}/{}/wal-{:06}.log",
+                        inner.data_dir, MEMTABLE_DIR, new_active_wal_id
+                    ),
+                    None,
+                    inner.config.write_buffer_size,
+                )?;
+
+                // Swap out the old active memtable and freeze it
+                let old_active = std::mem::replace(&mut inner.active, new_active);
+                let frozen = old_active.frozen()?;
+                // Insert at beginning to maintain sorted order (newest first)
+                inner.frozen.insert(0, frozen);
+
+                inner.manifest.add_frozen_wal(frozen_wal_id)?;
+                inner.manifest.set_active_wal(new_active_wal_id)?;
+
+                inner.active.delete_range(start_key, end_key)?;
+
+                let max_lsn = inner.active.max_lsn();
+                inner.manifest.update_lsn(max_lsn)?;
+
+                Ok(())
+            }
+
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, EngineError> {
-        unimplemented!()
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        // 1. Check active memtable first
+        if let Some(value) = inner.active.get(&key)? {
+            return Ok(Some(value));
+        }
+
+        // 2. Check frozen memtables (already sorted newest first)
+        for frozen in &inner.frozen {
+            if let Some(value) = frozen.get(&key)? {
+                return Ok(Some(value));
+            }
+        }
+
+        // 3. Check SSTables (already sorted newest first)
+        for sstable in &inner.sstables {
+            match sstable.get(&key)? {
+                sstable::SSTGetResult::Put { value, .. } => {
+                    return Ok(Some(value));
+                }
+                sstable::SSTGetResult::Delete { .. } => {
+                    return Ok(None);
+                }
+                sstable::SSTGetResult::RangeDelete { .. } => {
+                    return Ok(None);
+                }
+                sstable::SSTGetResult::NotFound => {
+                    // Continue to next SSTable
+                    continue;
+                }
+            }
+        }
+
+        // 4. Key not found in any layer
+        Ok(None)
     }
 
     pub fn scan(
@@ -199,8 +423,116 @@ impl Engine {
         unimplemented!()
     }
 
-    fn trigger_flush(&self) -> Result<(), EngineError> {
-        unimplemented!()
+    fn flush_frozen_to_sstable_inner(inner: &mut EngineInner) -> Result<(), EngineError> {
+        if inner.frozen.is_empty() {
+            return Ok(());
+        }
+
+        // Take the first frozen memtable
+        let frozen = inner.frozen.remove(0);
+        let frozen_wal_id = frozen.memtable.wal.header.wal_seq;
+
+        // Get all records from the frozen memtable
+        let records: Vec<_> = frozen.iter_for_flush()?.collect();
+
+        // Separate into point entries and range tombstones
+        let mut point_entries = Vec::new();
+        let mut range_tombstones = Vec::new();
+
+        for record in records {
+            match record {
+                MemtableRecord::Put {
+                    key,
+                    value,
+                    lsn,
+                    timestamp,
+                } => {
+                    point_entries.push(sstable::MemtablePointEntry {
+                        key,
+                        value: Some(value),
+                        lsn,
+                        timestamp,
+                    });
+                }
+                MemtableRecord::Delete {
+                    key,
+                    lsn,
+                    timestamp,
+                } => {
+                    point_entries.push(sstable::MemtablePointEntry {
+                        key,
+                        value: None,
+                        lsn,
+                        timestamp,
+                    });
+                }
+                MemtableRecord::RangeDelete {
+                    start,
+                    end,
+                    lsn,
+                    timestamp,
+                } => {
+                    range_tombstones.push(sstable::MemtableRangeTombstone {
+                        start,
+                        end,
+                        lsn,
+                        timestamp,
+                    });
+                }
+            }
+        }
+
+        // Generate unique SSTable ID by finding max ID from existing SSTable files
+        let mut max_id = 0u64;
+        let sstable_dir = format!("{}/{}", inner.data_dir, SSTABLE_DIR);
+
+        if let Ok(entries) = fs::read_dir(&sstable_dir) {
+            for entry in entries.flatten() {
+                if let Some(file_name) = entry.file_name().to_str() {
+                    if let Some(id) = file_name
+                        .strip_prefix("sstable-")
+                        .and_then(|s| s.strip_suffix(".sst"))
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        max_id = max_id.max(id);
+                    }
+                }
+            }
+        }
+
+        let sstable_id = max_id + 1;
+        let sstable_path = format!(
+            "{}/{}/sstable-{}.sst",
+            inner.data_dir, SSTABLE_DIR, sstable_id
+        );
+
+        // Build the SSTable
+        let point_count = point_entries.len();
+        let range_count = range_tombstones.len();
+
+        sstable::build_from_iterators(
+            &sstable_path,
+            point_count,
+            point_entries.into_iter(),
+            range_count,
+            range_tombstones.into_iter(),
+        )?;
+
+        // Load the newly created SSTable
+        let sstable = SSTable::open(&sstable_path)?;
+        // Insert at beginning to maintain sorted order (newest first)
+        inner.sstables.insert(0, sstable);
+
+        // Update manifest
+        inner.manifest.add_sstable(ManifestSstEntry {
+            id: sstable_id,
+            path: sstable_path.into(),
+        })?;
+
+        // Remove the frozen WAL from manifest
+        inner.manifest.remove_frozen_wal(frozen_wal_id)?;
+
+        Ok(())
     }
 
     fn trigger_compcation(&self) -> Result<(), EngineError> {

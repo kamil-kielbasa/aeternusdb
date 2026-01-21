@@ -194,7 +194,7 @@ pub struct Wal<T: WalData> {
     path: String,
 
     /// Persistent header with metadata and integrity info.
-    header: WalHeader,
+    pub header: WalHeader,
 
     /// Marker field to associate this WAL with the generic record type `T`.
     _phantom: std::marker::PhantomData<T>,

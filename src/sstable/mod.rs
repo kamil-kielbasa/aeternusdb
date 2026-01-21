@@ -329,36 +329,36 @@ struct SSTableRangeTombstoneDataBlock {
 
 /// Metadata block containing SSTable-level properties and statistics.
 #[derive(bincode::Encode, bincode::Decode)]
-struct SSTablePropertiesBlock {
+pub struct SSTablePropertiesBlock {
     /// Creation timestamp (UNIX epoch nanos).
-    creation_timestamp: u64,
+    pub creation_timestamp: u64,
 
     /// Total number of records in the SSTable.
-    record_count: u64,
+    pub record_count: u64,
 
     /// Number of point deletions.
-    tombstone_count: u64,
+    pub tombstone_count: u64,
 
     /// Number of range tombstones.
-    range_tombstones_count: u64,
+    pub range_tombstones_count: u64,
 
     /// Minimum LSN present in this SSTable.
-    min_lsn: u64,
+    pub min_lsn: u64,
 
     /// Maximum LSN present in this SSTable.
-    max_lsn: u64,
+    pub max_lsn: u64,
 
     /// Minimum timestamp in this SSTable.
-    min_timestamp: u64,
+    pub min_timestamp: u64,
 
     /// Maximum timestamp in this SSTable.
-    max_timestamp: u64,
+    pub max_timestamp: u64,
 
     /// Minimum key in the SSTable.
-    min_key: Vec<u8>,
+    pub min_key: Vec<u8>,
 
     /// Maximum key in the SSTable.
-    max_key: Vec<u8>,
+    pub max_key: Vec<u8>,
 }
 
 /// Index entry pointing to a specific data block.
@@ -581,25 +581,25 @@ impl SSTScanResult {
 /// A fully memory-mapped, immutable **Sorted String Table (SSTable)**.
 pub struct SSTable {
     /// Memory-mapped file containing the full SSTable bytes.
-    mmap: Mmap,
+    pub mmap: Mmap,
 
     /// Parsed header block containing magic/version information.
-    header: SSTableHeader,
+    pub header: SSTableHeader,
 
     /// Bloom filter block for fast membership tests.
-    bloom: SSTableBloomBlock,
+    pub bloom: SSTableBloomBlock,
 
     /// Properties block with statistics and metadata.
-    properties: SSTablePropertiesBlock,
+    pub properties: SSTablePropertiesBlock,
 
     /// Range delete tombstone block.
-    range_deletes: SSTableRangeTombstoneDataBlock,
+    pub range_deletes: SSTableRangeTombstoneDataBlock,
 
     /// Index entries mapping key ranges to data blocks.
-    index: Vec<SSTableIndexEntry>,
+    pub index: Vec<SSTableIndexEntry>,
 
     /// Footer containing block handles and file integrity data.
-    footer: SSTableFooter,
+    pub footer: SSTableFooter,
 }
 
 // ------------------------------------------------------------------------------------------------
