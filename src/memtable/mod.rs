@@ -38,6 +38,7 @@ mod tests;
 use std::{
     cmp::Reverse,
     collections::BTreeMap,
+    os::unix::raw::pid_t,
     path::Path,
     sync::{
         Arc, RwLock,
@@ -175,6 +176,22 @@ pub enum MemtableRecord {
         lsn: u64,
         timestamp: u64,
     },
+}
+
+/// Result of a `get` operation on the memtable.
+#[derive(Debug, PartialEq)]
+pub enum MemtableGetResult {
+    /// Value found for the key.
+    Put(Vec<u8>),
+
+    /// Key was deleted by a point tombstone.
+    Delete,
+
+    /// Key was deleted by a range tombstone.
+    RangeDelete,
+
+    /// Key not found in the memtable.
+    NotFound,
 }
 
 /// Internal shared state of the memtable.
@@ -528,7 +545,7 @@ impl Memtable {
     /// # Returns
     /// - `Ok(Some(value))` if visible
     /// - `Ok(None)` if deleted or not present
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, MemtableError> {
+    pub fn get(&self, key: &[u8]) -> Result<MemtableGetResult, MemtableError> {
         trace!("get() started, key: {}", HexKey(key));
 
         let guard = self.inner.read().map_err(|_| {
@@ -536,35 +553,63 @@ impl Memtable {
             MemtableError::Internal("RwLock poisoned".into())
         })?;
 
-        // --- STEP 1: Highest-LSN point entry ---
+        // Check if key exists as a point entry
         let point_opt = guard
             .tree
             .get(key)
             .and_then(|versions| versions.values().next());
 
-        let point = match point_opt {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-
-        // --- STEP 2: check range tombstones ---
-        let mut tombstone_lsn = 0;
-
+        // Check if key matches any range tombstones
+        let mut covering_tombstone_lsn: Option<u64> = None;
         for (_start, versions) in guard.range_tombstones.range(..=key.to_vec()) {
-            // highest LSN tombstone for this start
-            if let Some(t) = versions.values().next() {
-                if t.start.as_slice() <= key && key < t.end.as_slice() {
-                    tombstone_lsn = tombstone_lsn.max(t.lsn);
+            if let Some(tombstone) = versions.values().next() {
+                if tombstone.start.as_slice() <= key && key < tombstone.end.as_slice() {
+                    covering_tombstone_lsn = Some(
+                        covering_tombstone_lsn
+                            .map(|lsn| lsn.max(tombstone.lsn))
+                            .unwrap_or(tombstone.lsn),
+                    );
                 }
             }
         }
 
-        // --- STEP 3: final resolution ---
-        if tombstone_lsn > point.lsn {
-            return Ok(None); // deleted by tombstone
-        }
+        match (point_opt, covering_tombstone_lsn) {
+            // No point entry and no tombstone → key not found
+            (None, None) => Ok(MemtableGetResult::NotFound),
 
-        Ok(point.value.clone())
+            // No point entry but covered by range tombstone
+            (None, Some(_)) => Ok(MemtableGetResult::RangeDelete),
+
+            // Point entry exists, no covering tombstone
+            (Some(point), None) => {
+                if point.is_delete {
+                    Ok(MemtableGetResult::Delete)
+                } else {
+                    Ok(MemtableGetResult::Put(
+                        point
+                            .value
+                            .clone()
+                            .expect("Non-delete point entry must have a value"),
+                    ))
+                }
+            }
+
+            // Both point entry and tombstone exist → compare LSNs
+            (Some(point), Some(tombstone_lsn)) => {
+                if tombstone_lsn > point.lsn {
+                    Ok(MemtableGetResult::RangeDelete)
+                } else if point.is_delete {
+                    Ok(MemtableGetResult::Delete)
+                } else {
+                    Ok(MemtableGetResult::Put(
+                        point
+                            .value
+                            .clone()
+                            .expect("Non-delete point entry must have a value"),
+                    ))
+                }
+            }
+        }
     }
 
     /// Performs an ordered range scan over `[start, end)`.
@@ -750,7 +795,7 @@ impl FrozenMemtable {
     }
 
     /// Retrieves the latest visible value for a key.
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, MemtableError> {
+    pub fn get(&self, key: &[u8]) -> Result<MemtableGetResult, MemtableError> {
         self.memtable.get(key)
     }
 

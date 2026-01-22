@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod frozen_tests {
-    use crate::memtable::{FrozenMemtable, Memtable, MemtableRecord, Wal};
+    use crate::memtable::{FrozenMemtable, Memtable, MemtableGetResult, MemtableRecord, Wal};
     use tempfile::TempDir;
 
     #[test]
@@ -16,9 +16,12 @@ mod frozen_tests {
 
         let frozen = memtable.frozen().unwrap();
 
-        assert_eq!(frozen.get(b"a").unwrap(), Some(b"1".to_vec()));
-        assert_eq!(frozen.get(b"b").unwrap(), None);
-        assert_eq!(frozen.get(b"c").unwrap(), None);
+        assert_eq!(
+            frozen.get(b"a").unwrap(),
+            MemtableGetResult::Put(b"1".to_vec())
+        );
+        assert_eq!(frozen.get(b"b").unwrap(), MemtableGetResult::Delete);
+        assert_eq!(frozen.get(b"c").unwrap(), MemtableGetResult::NotFound);
     }
 
     #[test]

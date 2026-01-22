@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::memtable::{Memtable, MemtableError, MemtableRecord};
+    use crate::memtable::{Memtable, MemtableError, MemtableGetResult, MemtableRecord};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
@@ -22,7 +22,7 @@ mod tests {
         memtable.put(b"key1".to_vec(), b"value1".to_vec()).unwrap();
         let value = memtable.get(b"key1").unwrap();
 
-        assert_eq!(value, Some(b"value1".to_vec()));
+        assert_eq!(value, MemtableGetResult::Put(b"value1".to_vec()));
     }
 
     #[test]
@@ -37,7 +37,7 @@ mod tests {
         memtable.delete(b"key1".to_vec()).unwrap();
 
         let value = memtable.get(b"key1").unwrap();
-        assert_eq!(value, None);
+        assert_eq!(value, MemtableGetResult::Delete);
     }
 
     #[test]
@@ -139,13 +139,25 @@ mod tests {
         assert!(found_range_delete_3, "delete_range 3 not found in flush");
 
         // Verify memtable state is unchanged after flush iteration
-        assert_eq!(memtable.get(b"key1").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(memtable.get(b"key2").unwrap(), None);
-        assert_eq!(memtable.get(b"key3").unwrap(), Some(b"value3".to_vec()));
-        assert_eq!(memtable.get(b"key4").unwrap(), Some(b"value4".to_vec()));
-        assert_eq!(memtable.get(b"key8").unwrap(), Some(b"value8".to_vec()));
-        assert_eq!(memtable.get(b"key9").unwrap(), None);
-        assert_eq!(memtable.get(b"key10").unwrap(), None);
+        assert_eq!(
+            memtable.get(b"key1").unwrap(),
+            MemtableGetResult::Put(b"value1".to_vec())
+        );
+        assert_eq!(memtable.get(b"key2").unwrap(), MemtableGetResult::Delete);
+        assert_eq!(
+            memtable.get(b"key3").unwrap(),
+            MemtableGetResult::Put(b"value3".to_vec())
+        );
+        assert_eq!(
+            memtable.get(b"key4").unwrap(),
+            MemtableGetResult::Put(b"value4".to_vec())
+        );
+        assert_eq!(
+            memtable.get(b"key8").unwrap(),
+            MemtableGetResult::Put(b"value8".to_vec())
+        );
+        assert_eq!(memtable.get(b"key9").unwrap(), MemtableGetResult::Delete);
+        assert_eq!(memtable.get(b"key10").unwrap(), MemtableGetResult::Delete);
     }
 
     #[test]
@@ -178,7 +190,7 @@ mod tests {
         memtable.put(b"a".to_vec(), b"2".to_vec()).unwrap();
 
         let value = memtable.get(b"a").unwrap();
-        assert_eq!(value, Some(b"2".to_vec()));
+        assert_eq!(value, MemtableGetResult::Put(b"2".to_vec()));
     }
 
     #[test]
@@ -207,7 +219,7 @@ mod tests {
 
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
         let value = memtable.get(b"x").unwrap();
-        assert_eq!(value, Some(b"y".to_vec()));
+        assert_eq!(value, MemtableGetResult::Put(b"y".to_vec()));
     }
 
     #[test]
@@ -227,16 +239,22 @@ mod tests {
 
         assert_eq!(lsn_before, lsn_after);
 
-        assert_eq!(recovered.get(b"alpha").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(recovered.get(b"beta").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(
+            recovered.get(b"alpha").unwrap(),
+            MemtableGetResult::Put(b"value1".to_vec())
+        );
+        assert_eq!(
+            recovered.get(b"beta").unwrap(),
+            MemtableGetResult::Put(b"value2".to_vec())
+        );
 
         recovered
             .put(b"gamma".to_vec(), b"value3".to_vec())
             .unwrap();
         assert_eq!(recovered.max_lsn(), lsn_after + 1);
         assert_eq!(
-            recovered.get(b"gamma").unwrap().unwrap(),
-            b"value3".to_vec()
+            recovered.get(b"gamma").unwrap(),
+            MemtableGetResult::Put(b"value3".to_vec())
         );
     }
 
@@ -248,7 +266,10 @@ mod tests {
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
-        assert_eq!(memtable.get(b"nonexistent").unwrap(), None);
+        assert_eq!(
+            memtable.get(b"nonexistent").unwrap(),
+            MemtableGetResult::NotFound
+        );
         assert_eq!(memtable.scan(b"a", b"z").unwrap().count(), 0);
     }
 }

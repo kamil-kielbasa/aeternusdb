@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
-use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableRecord};
+use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableGetResult, MemtableRecord};
 use crate::sstable::{self, SSTable, SSTableError};
 
 #[cfg(test)]
@@ -66,6 +66,11 @@ pub struct EngineConfig {
     pub thread_pool_size: usize,
 }
 
+pub struct EngineStats {
+    pub frozen_count: usize,
+    pub sstables_count: usize,
+}
+
 struct EngineInner {
     /// Persistent manifest for this engine (keeps track of SSTables, generations, etc).
     manifest: Manifest,
@@ -93,19 +98,40 @@ pub struct Engine {
 
 impl Engine {
     pub fn open(path: impl AsRef<Path>, config: EngineConfig) -> Result<Self, EngineError> {
-        /// 1. Load or create manifest.
-        let manifest = Manifest::open(&path)?;
+        // 0. Create necessary directories
+        let path_str = path.as_ref().to_string_lossy();
+        let manifest_dir = format!("{}/{}", path_str, MANIFEST_DIR);
+        let memtable_dir = format!("{}/{}", path_str, MEMTABLE_DIR);
+        let sstable_dir = format!("{}/{}", path_str, SSTABLE_DIR);
+
+        fs::create_dir_all(&manifest_dir)?;
+        fs::create_dir_all(&memtable_dir)?;
+        fs::create_dir_all(&sstable_dir)?;
+
+        // 1. Load or create manifest.
+        let manifest_path = format!("{}/{}", path.as_ref().to_string_lossy(), MANIFEST_DIR);
+        let manifest = Manifest::open(&manifest_path)?;
         let manifest_last_lsn = manifest.get_last_lsn()?;
 
         // 2. Discover existing WAL files and load active/frozen WAL info from manifest.
         let active_wal_nr = manifest.get_active_wal()?;
-        let active_wal_path = format!("wal-{:06}.log", active_wal_nr);
+        let active_wal_path = format!(
+            "{}/{}/wal-{:06}.log",
+            path.as_ref().to_string_lossy(),
+            MEMTABLE_DIR,
+            active_wal_nr
+        );
         let memtable = Memtable::new(active_wal_path, None, config.write_buffer_size)?;
 
         let frozen_wals = manifest.get_frozen_wals()?;
         let mut frozen_memtables = Vec::new();
         for wal_nr in frozen_wals {
-            let frozen_wal_path = format!("wal-{:06}.log", wal_nr);
+            let frozen_wal_path = format!(
+                "{}/{}/wal-{:06}.log",
+                path.as_ref().to_string_lossy(),
+                MEMTABLE_DIR,
+                wal_nr
+            );
             let memtable = Memtable::new(frozen_wal_path, None, config.write_buffer_size)?;
             frozen_memtables.push(memtable.frozen()?);
         }
@@ -380,38 +406,43 @@ impl Engine {
             .read()
             .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
 
-        // 1. Check active memtable first
-        if let Some(value) = inner.active.get(&key)? {
-            return Ok(Some(value));
+        // --------------------------------------------------
+        // 1. Active memtable (newest)
+        // --------------------------------------------------
+        match inner.active.get(&key)? {
+            MemtableGetResult::Put(value) => return Ok(Some(value)),
+            MemtableGetResult::Delete | MemtableGetResult::RangeDelete => return Ok(None),
+            MemtableGetResult::NotFound => {}
         }
 
-        // 2. Check frozen memtables (already sorted newest first)
+        // --------------------------------------------------
+        // 2. Frozen memtables (newest → oldest)
+        // --------------------------------------------------
         for frozen in &inner.frozen {
-            if let Some(value) = frozen.get(&key)? {
-                return Ok(Some(value));
+            match frozen.get(&key)? {
+                MemtableGetResult::Put(value) => return Ok(Some(value)),
+                MemtableGetResult::Delete | MemtableGetResult::RangeDelete => {
+                    return Ok(None);
+                }
+                MemtableGetResult::NotFound => {}
             }
         }
 
-        // 3. Check SSTables (already sorted newest first)
+        // --------------------------------------------------
+        // 3. SSTables (newest → oldest)
+        // --------------------------------------------------
         for sstable in &inner.sstables {
             match sstable.get(&key)? {
-                sstable::SSTGetResult::Put { value, .. } => {
-                    return Ok(Some(value));
-                }
-                sstable::SSTGetResult::Delete { .. } => {
-                    return Ok(None);
-                }
-                sstable::SSTGetResult::RangeDelete { .. } => {
-                    return Ok(None);
-                }
-                sstable::SSTGetResult::NotFound => {
-                    // Continue to next SSTable
-                    continue;
-                }
+                sstable::SSTGetResult::Put { value, .. } => return Ok(Some(value)),
+                sstable::SSTGetResult::Delete { .. }
+                | sstable::SSTGetResult::RangeDelete { .. } => return Ok(None),
+                sstable::SSTGetResult::NotFound => {}
             }
         }
 
-        // 4. Key not found in any layer
+        // --------------------------------------------------
+        // 4. Not found anywhere
+        // --------------------------------------------------
         Ok(None)
     }
 
@@ -421,6 +452,18 @@ impl Engine {
         end_key: Vec<u8>,
     ) -> Result<EngineScanIterator, EngineError> {
         unimplemented!()
+    }
+
+    pub fn stats(&self) -> Result<EngineStats, EngineError> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        Ok(EngineStats {
+            frozen_count: inner.frozen.len(),
+            sstables_count: inner.sstables.len(),
+        })
     }
 
     fn flush_frozen_to_sstable_inner(inner: &mut EngineInner) -> Result<(), EngineError> {
