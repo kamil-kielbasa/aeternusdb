@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod frozen_tests {
-    use crate::memtable::{FrozenMemtable, Memtable, MemtableGetResult, MemtableRecord, Wal};
+    use crate::memtable::{Memtable, MemtableGetResult, MemtableRecord, MemtableScanResult, Wal};
     use tempfile::TempDir;
 
     #[test]
@@ -37,10 +37,95 @@ mod frozen_tests {
         memtable.delete_range(b"b".to_vec(), b"d".to_vec()).unwrap();
 
         let frozen = memtable.frozen().unwrap();
+        let results: Vec<_> = frozen.scan(b"a", b"z").unwrap().collect();
 
-        let results: Vec<_> = frozen.scan(b"a", b"z").unwrap().map(|(k, _)| k).collect();
+        let expected = vec![
+            MemtableScanResult::Put {
+                key: b"a".to_vec(),
+                value: b"1".to_vec(),
+                lsn: 1,
+                timestamp: 0,
+            },
+            MemtableScanResult::RangeDelete {
+                start: b"b".to_vec(),
+                end: b"d".to_vec(),
+                lsn: 4,
+                timestamp: 0,
+            },
+            MemtableScanResult::Put {
+                key: b"b".to_vec(),
+                value: b"2".to_vec(),
+                lsn: 2,
+                timestamp: 0,
+            },
+            MemtableScanResult::Put {
+                key: b"c".to_vec(),
+                value: b"3".to_vec(),
+                lsn: 3,
+                timestamp: 0,
+            },
+        ];
 
-        assert_eq!(results, vec![b"a".to_vec()]);
+        assert_eq!(results.len(), expected.len());
+        for (res, exp) in results.iter().zip(expected.iter()) {
+            match (res, exp) {
+                (
+                    MemtableScanResult::Put {
+                        key: rk,
+                        value: rv,
+                        lsn: rlsn,
+                        timestamp: rts,
+                    },
+                    MemtableScanResult::Put {
+                        key: ek,
+                        value: ev,
+                        lsn: elsn,
+                        timestamp: ets,
+                    },
+                ) => {
+                    assert_eq!(rk, ek);
+                    assert_eq!(rv, ev);
+                    assert_eq!(rlsn, elsn);
+                    assert!(*rts > 0);
+                }
+                (
+                    MemtableScanResult::Delete {
+                        key: rk,
+                        lsn: rlsn,
+                        timestamp: rts,
+                    },
+                    MemtableScanResult::Delete {
+                        key: ek,
+                        lsn: elsn,
+                        timestamp: ets,
+                    },
+                ) => {
+                    assert_eq!(rk, ek);
+                    assert_eq!(rlsn, elsn);
+                    assert!(*rts > 0);
+                }
+                (
+                    MemtableScanResult::RangeDelete {
+                        start: rk,
+                        end: rks,
+                        lsn: rlsn,
+                        timestamp: rts,
+                    },
+                    MemtableScanResult::RangeDelete {
+                        start: ek,
+                        end: eks,
+                        lsn: elsn,
+                        timestamp: ets,
+                    },
+                ) => {
+                    assert_eq!(rk, ek);
+                    assert_eq!(rks, eks);
+                    assert_eq!(rlsn, elsn);
+                    assert!(*rts > 0);
+                }
+                _ => panic!("Mismatched scan result types"),
+            }
+        }
     }
 
     #[test]

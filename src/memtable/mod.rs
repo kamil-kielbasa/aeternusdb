@@ -194,6 +194,50 @@ pub enum MemtableGetResult {
     NotFound,
 }
 
+#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
+pub enum MemtableScanResult {
+    /// Insert or update a single key.
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        lsn: u64,
+        timestamp: u64,
+    },
+
+    /// Delete a single key.
+    Delete {
+        key: Vec<u8>,
+        lsn: u64,
+        timestamp: u64,
+    },
+
+    /// Delete all keys in `[start, end)`.
+    RangeDelete {
+        start: Vec<u8>,
+        end: Vec<u8>,
+        lsn: u64,
+        timestamp: u64,
+    },
+}
+
+impl MemtableScanResult {
+    pub fn lsn(&self) -> u64 {
+        match self {
+            MemtableScanResult::Put { lsn, .. } => *lsn,
+            MemtableScanResult::Delete { lsn, .. } => *lsn,
+            MemtableScanResult::RangeDelete { lsn, .. } => *lsn,
+        }
+    }
+
+    pub fn key_start(&self) -> &Vec<u8> {
+        match self {
+            MemtableScanResult::Put { key, .. } => key,
+            MemtableScanResult::Delete { key, .. } => key,
+            MemtableScanResult::RangeDelete { start, .. } => start,
+        }
+    }
+}
+
 /// Internal shared state of the memtable.
 ///
 /// This structure is protected by an `RwLock` and must never be
@@ -549,7 +593,7 @@ impl Memtable {
         trace!("get() started, key: {}", HexKey(key));
 
         let guard = self.inner.read().map_err(|_| {
-            error!("Read-write lock poisoned during scan");
+            error!("Read-write lock poisoned during get");
             MemtableError::Internal("RwLock poisoned".into())
         })?;
 
@@ -626,7 +670,7 @@ impl Memtable {
         &self,
         start: &[u8],
         end: &[u8],
-    ) -> Result<impl Iterator<Item = (Vec<u8>, MemtableSingleEntry)>, MemtableError> {
+    ) -> Result<impl Iterator<Item = MemtableScanResult>, MemtableError> {
         trace!(
             "scan() started with range. Start key: {} end key: {}",
             HexKey(start),
@@ -642,35 +686,61 @@ impl Memtable {
             MemtableError::Internal("RwLock poisoned".into())
         })?;
 
-        let mut records = Vec::new();
+        let mut out = Vec::new();
 
+        // 1) Collect point entries
         for (key, versions) in guard.tree.range(start.to_vec()..end.to_vec()) {
-            let Some(point) = versions.values().next() else {
-                continue;
-            };
-
-            if point.is_delete {
-                continue;
-            }
-
-            let mut tombstone_lsn = 0;
-            for (_start, t_versions) in guard.range_tombstones.range(..=key.clone()) {
-                // highest LSN tombstone for this start
-                if let Some(t) = t_versions.values().next() {
-                    if t.start.as_slice() <= key.as_slice() && key.as_slice() < t.end.as_slice() {
-                        tombstone_lsn = tombstone_lsn.max(t.lsn);
+            for entry in versions.values() {
+                let record = if entry.is_delete {
+                    MemtableScanResult::Delete {
+                        key: key.clone(),
+                        lsn: entry.lsn,
+                        timestamp: entry.timestamp,
                     }
-                }
-            }
+                } else {
+                    MemtableScanResult::Put {
+                        key: key.clone(),
+                        value: entry.value.clone().unwrap(),
+                        lsn: entry.lsn,
+                        timestamp: entry.timestamp,
+                    }
+                };
 
-            if tombstone_lsn > point.lsn {
-                continue; // deleted by tombstone
+                out.push(record);
             }
-
-            records.push((key.clone(), point.clone()));
         }
 
-        Ok(records.into_iter())
+        // 2) Collect range tombstones
+        for (start_key, versions) in guard.range_tombstones.iter() {
+            for tombstone in versions.values() {
+                // Check if tombstone overlaps scan range
+                if tombstone.end.as_slice() <= start || tombstone.start.as_slice() >= end {
+                    continue;
+                }
+
+                let record = MemtableScanResult::RangeDelete {
+                    start: tombstone.start.clone(),
+                    end: tombstone.end.clone(),
+                    lsn: tombstone.lsn,
+                    timestamp: tombstone.timestamp,
+                };
+
+                out.push(record);
+            }
+        }
+
+        // 3) Sort stream: key ASC, lsn DESC
+        out.sort_by(|a, b| {
+            let ka = a.key_start();
+            let kb = b.key_start();
+
+            match ka.cmp(kb) {
+                std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()), // Descending LSN
+                other => other,
+            }
+        });
+
+        Ok(out.into_iter())
     }
 
     /// Returns a logical snapshot of the memtable suitable for flushing.
@@ -804,7 +874,7 @@ impl FrozenMemtable {
         &self,
         start: &[u8],
         end: &[u8],
-    ) -> Result<impl Iterator<Item = (Vec<u8>, MemtableSingleEntry)>, MemtableError> {
+    ) -> Result<impl Iterator<Item = MemtableScanResult>, MemtableError> {
         self.memtable.scan(start, end)
     }
 

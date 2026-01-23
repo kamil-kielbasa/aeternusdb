@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::memtable::{Memtable, MemtableError, MemtableGetResult, MemtableRecord};
+    use crate::memtable::{
+        Memtable, MemtableError, MemtableGetResult, MemtableRecord, MemtableScanResult,
+    };
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
@@ -174,8 +176,37 @@ mod tests {
 
         let scanned: Vec<_> = memtable.scan(b"a", b"c").unwrap().collect();
         assert_eq!(scanned.len(), 2);
-        assert_eq!(scanned[0].0, b"a".to_vec());
-        assert_eq!(scanned[1].0, b"b".to_vec());
+
+        // Put a
+        match &scanned[0] {
+            MemtableScanResult::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(key, &b"a".to_vec());
+                assert_eq!(value, &b"1".to_vec());
+                assert_eq!(*lsn, 1);
+                assert!(*timestamp > 0);
+            }
+            other => panic!("Expected Put(a), got {:?}", other),
+        }
+
+        match &scanned[1] {
+            MemtableScanResult::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(key, &b"b".to_vec());
+                assert_eq!(value, &b"2".to_vec());
+                assert_eq!(*lsn, 2);
+                assert!(*timestamp > 0);
+            }
+            other => panic!("Expected Put(b), got {:?}", other),
+        }
     }
 
     #[test]
