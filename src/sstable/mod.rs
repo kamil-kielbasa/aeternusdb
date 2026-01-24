@@ -576,6 +576,10 @@ impl SSTScanResult {
             SSTScanResult::RangeDelete { timestamp, .. } => *timestamp,
         }
     }
+
+    pub fn cmp(a: &SSTScanResult, b: &SSTScanResult) -> std::cmp::Ordering {
+        a.key().cmp(b.key()).then_with(|| b.lsn().cmp(&a.lsn()))
+    }
 }
 
 /// A fully memory-mapped, immutable **Sorted String Table (SSTable)**.
@@ -957,6 +961,7 @@ impl SSTable {
     /// Returns a range-scan iterator over this SSTable.
     ///
     /// The iterator yields **raw MVCC entries** (Put/Delete/RangeDelete) in key order.
+    /// Key ordered ascending with LSN ordered descending within each key.
     /// Higher layers of the LSM tree (merging iterators) are responsible for
     /// de-duplicating versions and reconciling deletes.
     ///
@@ -977,7 +982,7 @@ impl SSTable {
         &self,
         start_key: &[u8],
         end_key: &[u8],
-    ) -> Result<SSTableScanIterator<'_>, SSTableError> {
+    ) -> Result<impl Iterator<Item = SSTScanResult>, SSTableError> {
         SSTableScanIterator::new(self, start_key.to_vec(), end_key.to_vec())
     }
 
@@ -1264,8 +1269,11 @@ pub struct SSTableScanIterator<'a> {
     /// Index into the SSTable range tombstone array.
     pending_range_idx: usize,
 
-    /// Whether all range tombstones prior to `start_key` have been emitted.
-    yielded_all_ranges_before_key: bool,
+    /// Next range tombstone to yield.
+    next_range: Option<SSTScanResult>,
+
+    /// Next point entry (Put/Delete) to yield.
+    next_point: Option<SSTScanResult>,
 }
 
 impl<'a> SSTableScanIterator<'a> {
@@ -1303,7 +1311,8 @@ impl<'a> SSTableScanIterator<'a> {
             start_key,
             end_key,
             pending_range_idx: 0,
-            yielded_all_ranges_before_key: false,
+            next_range: None,
+            next_point: None,
         })
     }
 
@@ -1329,45 +1338,43 @@ impl<'a> SSTableScanIterator<'a> {
 
     /// Return the next *point entry* (Put/Delete) in the scan key range,
     /// automatically advancing to the next block as needed.
-    fn next_point_or_delete(&mut self) -> Result<Option<SSTScanResult>, SSTableError> {
+    fn next_point_or_delete(&mut self) -> Option<SSTScanResult> {
         loop {
             let Some(it) = self.current_block_iter.as_mut() else {
-                return Ok(None);
+                return None;
             };
 
             if let Some(item) = it.next_item() {
                 // Stop when out of scan range
                 if item.key.as_slice() >= self.end_key.as_slice() {
-                    return Ok(None);
+                    return None;
                 }
 
                 if item.is_delete {
-                    return Ok(Some(SSTScanResult::Delete {
+                    return Some(SSTScanResult::Delete {
                         key: item.key,
                         lsn: item.lsn,
                         timestamp: item.timestamp,
-                    }));
+                    });
                 } else {
-                    return Ok(Some(SSTScanResult::Put {
+                    return Some(SSTScanResult::Put {
                         key: item.key,
                         value: item.value,
                         lsn: item.lsn,
                         timestamp: item.timestamp,
-                    }));
+                    });
                 }
             }
 
-            // end of block → load next
-            if !self.load_next_block()? {
-                return Ok(None);
+            // end of block - load next
+            match self.load_next_block() {
+                Ok(true) => continue,
+                Ok(false) | Err(_) => return None,
             }
         }
     }
 
     /// Return the next range tombstone that overlaps the scan range.
-    ///
-    /// Tombstones are emitted before point entries only at the beginning of iteration,
-    /// to maintain global scan ordering semantics.
     fn next_range_delete(&mut self) -> Option<SSTScanResult> {
         while self.pending_range_idx < self.sstable.range_deletes.data.len() {
             let r = &self.sstable.range_deletes.data[self.pending_range_idx];
@@ -1396,24 +1403,42 @@ impl<'a> SSTableScanIterator<'a> {
 
         None
     }
+
+    /// Ensure that `next_range` is populated.
+    fn fill_range(&mut self) {
+        if self.next_range.is_none() {
+            self.next_range = self.next_range_delete();
+        }
+    }
+
+    /// Ensure that `next_point` is populated.
+    fn fill_point(&mut self) {
+        if self.next_point.is_none() {
+            self.next_point = self.next_point_or_delete();
+        }
+    }
 }
 
-/// Implements idiomatic Rust iteration over many block entries.
 impl<'a> Iterator for SSTableScanIterator<'a> {
-    type Item = Result<SSTScanResult, SSTableError>;
+    type Item = SSTScanResult;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.yielded_all_ranges_before_key {
-            if let Some(rd) = self.next_range_delete() {
-                return Some(Ok(rd));
-            }
-            self.yielded_all_ranges_before_key = true;
-        }
+        self.fill_range();
+        self.fill_point();
 
-        match self.next_point_or_delete() {
-            Ok(Some(v)) => Some(Ok(v)),
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
+        match (&self.next_range, &self.next_point) {
+            (None, None) => None, // end of scan
+
+            (Some(_), None) => self.next_range.take(),
+            (None, Some(_)) => self.next_point.take(),
+
+            (Some(r), Some(p)) => {
+                if SSTScanResult::cmp(r, p).is_le() {
+                    self.next_range.take()
+                } else {
+                    self.next_point.take()
+                }
+            }
         }
     }
 }

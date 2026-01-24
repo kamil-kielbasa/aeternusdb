@@ -2,7 +2,6 @@
 mod tests {
     use crate::sstable::{
         self, MemtablePointEntry, MemtableRangeTombstone, SSTScanResult, SSTable,
-        SSTableScanIterator,
     };
     use tempfile::TempDir;
     use tracing::Level;
@@ -41,19 +40,6 @@ mod tests {
         }
     }
 
-    fn collect_results(mut it: SSTableScanIterator) -> Vec<SSTScanResult> {
-        let mut out = Vec::new();
-
-        while let Some(res) = it.next() {
-            match res {
-                Ok(v) => out.push(v),
-                Err(e) => panic!("Unexpected scan error: {:?}", e),
-            }
-        }
-
-        out
-    }
-
     #[test]
     fn test_scan_only_points() {
         init_tracing();
@@ -79,13 +65,11 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"a", b"z").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
 
-        assert_eq!(out.len(), points.len() + ranges.len());
+        assert_eq!(scanned.len(), points.len() + ranges.len());
 
-        // Put a
-        match &out[0] {
+        match &scanned[0] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -100,8 +84,7 @@ mod tests {
             other => panic!("Expected Put(a), got {:?}", other),
         }
 
-        // Put b
-        match &out[1] {
+        match &scanned[1] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -116,8 +99,7 @@ mod tests {
             other => panic!("Expected Put(b), got {:?}", other),
         }
 
-        // Put c
-        match &out[2] {
+        match &scanned[2] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -140,7 +122,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("scan_point_deletes.sst");
 
-        let points = vec![
+        let mut points = vec![
             point(b"a", b"1", 1, 10),
             del(b"b", 2, 11),
             point(b"c", b"3", 3, 12),
@@ -158,13 +140,11 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"a", b"z").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
 
-        assert_eq!(out.len(), points.len() + ranges.len());
+        assert_eq!(scanned.len(), points.len() + ranges.len());
 
-        // 0: put a
-        match &out[0] {
+        match &scanned[0] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -179,8 +159,7 @@ mod tests {
             other => panic!("Expected Put(a), got {:?}", other),
         }
 
-        // 1: delete b
-        match &out[1] {
+        match &scanned[1] {
             SSTScanResult::Delete {
                 key,
                 lsn,
@@ -193,8 +172,7 @@ mod tests {
             other => panic!("Expected Delete(b), got {:?}", other),
         }
 
-        // 2: put c
-        match &out[2] {
+        match &scanned[2] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -230,12 +208,11 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"a", b"z").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
 
-        assert_eq!(out.len(), points.len() + ranges.len());
+        assert_eq!(scanned.len(), points.len() + ranges.len());
 
-        match &out[0] {
+        match &scanned[0] {
             SSTScanResult::RangeDelete {
                 start_key,
                 end_key,
@@ -266,7 +243,7 @@ mod tests {
         ];
 
         let ranges = vec![
-            rdel(b"b", b"d", 100, 50), // deletes b and c
+            rdel(b"b", b"d", 5, 50), // deletes b and c
         ];
 
         sstable::build_from_iterators(
@@ -279,29 +256,11 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"a", b"z").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
 
-        assert_eq!(out.len(), points.len() + ranges.len());
+        assert_eq!(scanned.len(), points.len() + ranges.len());
 
-        // 0: range tombstone [b, d)
-        match &out[0] {
-            SSTScanResult::RangeDelete {
-                start_key,
-                end_key,
-                lsn,
-                timestamp,
-            } => {
-                assert_eq!(start_key.as_slice(), b"b");
-                assert_eq!(end_key.as_slice(), b"d");
-                assert_eq!(*lsn, 100);
-                assert_eq!(*timestamp, 50);
-            }
-            other => panic!("Expected RangeDelete(b..d), got {:?}", other),
-        }
-
-        // 1: put a
-        match &out[1] {
+        match &scanned[0] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -316,8 +275,22 @@ mod tests {
             other => panic!("Expected Put(a), got {:?}", other),
         }
 
-        // 2: put b
-        match &out[2] {
+        match &scanned[1] {
+            SSTScanResult::RangeDelete {
+                start_key,
+                end_key,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(start_key.as_slice(), b"b");
+                assert_eq!(end_key.as_slice(), b"d");
+                assert_eq!(*lsn, 5);
+                assert_eq!(*timestamp, 50);
+            }
+            other => panic!("Expected RangeDelete(b..d), got {:?}", other),
+        }
+
+        match &scanned[2] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -332,8 +305,7 @@ mod tests {
             other => panic!("Expected Put(b), got {:?}", other),
         }
 
-        // 3: put c
-        match &out[3] {
+        match &scanned[3] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -348,8 +320,7 @@ mod tests {
             other => panic!("Expected Put(c), got {:?}", other),
         }
 
-        // 4: put d
-        match &out[4] {
+        match &scanned[4] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -372,14 +343,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("scan_mixed.sst");
 
-        let points = vec![
+        // Flow of inserting points and range deletes into memtable:
+        let mut points = vec![
             point(b"a", b"1", 1, 10),
             point(b"b", b"2", 2, 11),
-            del(b"c", 3, 12),
-            point(b"d", b"4", 4, 13),
+            point(b"c", b"3", 3, 12),
+            del(b"c", 4, 13),
+            point(b"d", b"4", 5, 14),
+            del(b"a", 6, 15),
+            point(b"a", b"99", 8, 17),
+            point(b"a", b"100", 9, 18),
+            point(b"e", b"1000", 11, 20),
         ];
+        points.sort_by(|a, b| a.key.cmp(&b.key).then_with(|| b.lsn.cmp(&a.lsn)));
 
-        let ranges = vec![rdel(b"b", b"f", 50, 9)];
+        // Flow of inserting range deletes into memtable:
+        let mut ranges = vec![rdel(b"b", b"f", 7, 16), rdel(b"d", b"z", 10, 19)];
+        ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.lsn.cmp(&a.lsn)));
 
         sstable::build_from_iterators(
             &path,
@@ -391,29 +371,54 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"a", b"z").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
 
-        assert_eq!(out.len(), points.len() + ranges.len());
+        assert_eq!(scanned.len(), points.len() + ranges.len());
 
-        // 0: range delete b..f
-        match &out[0] {
-            SSTScanResult::RangeDelete {
-                start_key,
-                end_key,
+        match &scanned[0] {
+            SSTScanResult::Put {
+                key,
+                value,
                 lsn,
                 timestamp,
             } => {
-                assert_eq!(start_key.as_slice(), b"b");
-                assert_eq!(end_key.as_slice(), b"f");
-                assert_eq!(*lsn, 50);
-                assert_eq!(*timestamp, 9);
+                assert_eq!(key.as_slice(), b"a");
+                assert_eq!(value.as_slice(), b"100");
+                assert_eq!(*lsn, 9);
+                assert_eq!(*timestamp, 18);
             }
-            other => panic!("Expected RangeDelete(b..f), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
         }
 
-        // 1: put a
-        match &out[1] {
+        match &scanned[1] {
+            SSTScanResult::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(key.as_slice(), b"a");
+                assert_eq!(value.as_slice(), b"99");
+                assert_eq!(*lsn, 8);
+                assert_eq!(*timestamp, 17);
+            }
+            other => panic!("Expected Put, got {:?}", other),
+        }
+
+        match &scanned[2] {
+            SSTScanResult::Delete {
+                key,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(key.as_slice(), b"a");
+                assert_eq!(*lsn, 6);
+                assert_eq!(*timestamp, 15);
+            }
+            other => panic!("Expected Delete, got {:?}", other),
+        }
+
+        match &scanned[3] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -425,11 +430,25 @@ mod tests {
                 assert_eq!(*lsn, 1);
                 assert_eq!(*timestamp, 10);
             }
-            other => panic!("Expected Put(a), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
         }
 
-        // 2: put b
-        match &out[2] {
+        match &scanned[4] {
+            SSTScanResult::RangeDelete {
+                start_key,
+                end_key,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(start_key.as_slice(), b"b");
+                assert_eq!(end_key.as_slice(), b"f");
+                assert_eq!(*lsn, 7);
+                assert_eq!(*timestamp, 16);
+            }
+            other => panic!("Expected RangeDelete, got {:?}", other),
+        }
+
+        match &scanned[5] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -441,25 +460,53 @@ mod tests {
                 assert_eq!(*lsn, 2);
                 assert_eq!(*timestamp, 11);
             }
-            other => panic!("Expected Put(b), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
         }
 
-        // 3: delete c
-        match &out[3] {
+        match &scanned[6] {
             SSTScanResult::Delete {
                 key,
                 lsn,
                 timestamp,
             } => {
                 assert_eq!(key.as_slice(), b"c");
+                assert_eq!(*lsn, 4);
+                assert_eq!(*timestamp, 13);
+            }
+            other => panic!("Expected Delete, got {:?}", other),
+        }
+
+        match &scanned[7] {
+            SSTScanResult::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(key.as_slice(), b"c");
+                assert_eq!(value.as_slice(), b"3");
                 assert_eq!(*lsn, 3);
                 assert_eq!(*timestamp, 12);
             }
-            other => panic!("Expected Delete(c), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
         }
 
-        // 4: put d
-        match &out[4] {
+        match &scanned[8] {
+            SSTScanResult::RangeDelete {
+                start_key,
+                end_key,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(start_key.as_slice(), b"d");
+                assert_eq!(end_key.as_slice(), b"z");
+                assert_eq!(*lsn, 10);
+                assert_eq!(*timestamp, 19);
+            }
+            other => panic!("Expected RangeDelete, got {:?}", other),
+        }
+
+        match &scanned[9] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -468,10 +515,25 @@ mod tests {
             } => {
                 assert_eq!(key.as_slice(), b"d");
                 assert_eq!(value.as_slice(), b"4");
-                assert_eq!(*lsn, 4);
-                assert_eq!(*timestamp, 13);
+                assert_eq!(*lsn, 5);
+                assert_eq!(*timestamp, 14);
             }
-            other => panic!("Expected Put(d), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
+        }
+
+        match &scanned[10] {
+            SSTScanResult::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => {
+                assert_eq!(key.as_slice(), b"e");
+                assert_eq!(value.as_slice(), b"1000");
+                assert_eq!(*lsn, 11);
+                assert_eq!(*timestamp, 20);
+            }
+            other => panic!("Expected Put, got {:?}", other),
         }
     }
 
@@ -483,7 +545,6 @@ mod tests {
         let path = tmp.path().join("scan_after_end.sst");
 
         let points = vec![point(b"a", b"1", 1, 10), point(b"b", b"2", 2, 11)];
-
         let ranges = vec![rdel(b"z", b"zz", 10, 99)];
 
         sstable::build_from_iterators(
@@ -496,13 +557,11 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"a", b"d").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"d").unwrap().collect();
 
-        assert_eq!(out.len(), points.len());
+        assert_eq!(scanned.len(), points.len());
 
-        // a
-        match &out[0] {
+        match &scanned[0] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -514,11 +573,10 @@ mod tests {
                 assert_eq!(*lsn, 1);
                 assert_eq!(*timestamp, 10);
             }
-            other => panic!("Expected Put(a), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
         }
 
-        // b
-        match &out[1] {
+        match &scanned[1] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -530,7 +588,7 @@ mod tests {
                 assert_eq!(*lsn, 2);
                 assert_eq!(*timestamp, 11);
             }
-            other => panic!("Expected Put(b), got {:?}", other),
+            other => panic!("Expected Put, got {:?}", other),
         }
     }
 
@@ -542,7 +600,6 @@ mod tests {
         let path = tmp.path().join("scan_before_start.sst");
 
         let points = vec![point(b"d", b"4", 4, 10), point(b"e", b"5", 5, 11)];
-
         let ranges = vec![rdel(b"a", b"c", 99, 3)];
 
         sstable::build_from_iterators(
@@ -555,13 +612,11 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let it = sst.scan(b"d", b"z").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"d", b"z").unwrap().collect();
 
-        assert_eq!(out.len(), points.len());
+        assert_eq!(scanned.len(), points.len());
 
-        // d
-        match &out[0] {
+        match &scanned[0] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -576,8 +631,7 @@ mod tests {
             other => panic!("Expected Put(d), got {:?}", other),
         }
 
-        // e
-        match &out[1] {
+        match &scanned[1] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -621,16 +675,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-
-        // Scan only c..e (e is exclusive)
-        let it = sst.scan(b"c", b"e").unwrap();
-        let out = collect_results(it);
+        let scanned: Vec<SSTScanResult> = sst.scan(b"c", b"e").unwrap().collect();
 
         // Should return c and d only
-        assert_eq!(out.len(), 2);
+        assert_eq!(scanned.len(), 2);
 
-        // c
-        match &out[0] {
+        match &scanned[0] {
             SSTScanResult::Put {
                 key,
                 value,
@@ -645,8 +695,7 @@ mod tests {
             other => panic!("Expected Put(c), got {:?}", other),
         }
 
-        // d
-        match &out[1] {
+        match &scanned[1] {
             SSTScanResult::Put {
                 key,
                 value,
