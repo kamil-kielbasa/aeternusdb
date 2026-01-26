@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod frozen_tests {
-    use crate::memtable::{Memtable, MemtableGetResult, MemtableRecord, MemtableScanResult, Wal};
+    use crate::memtable::{Memtable, MemtableGetResult, Record, Wal};
     use tempfile::TempDir;
 
     #[test]
@@ -40,25 +40,25 @@ mod frozen_tests {
         let results: Vec<_> = frozen.scan(b"a", b"z").unwrap().collect();
 
         let expected = vec![
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"a".to_vec(),
                 value: b"1".to_vec(),
                 lsn: 1,
                 timestamp: 0,
             },
-            MemtableScanResult::RangeDelete {
+            Record::RangeDelete {
                 start: b"b".to_vec(),
                 end: b"d".to_vec(),
                 lsn: 4,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"b".to_vec(),
                 value: b"2".to_vec(),
                 lsn: 2,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"c".to_vec(),
                 value: b"3".to_vec(),
                 lsn: 3,
@@ -70,13 +70,13 @@ mod frozen_tests {
         for (res, exp) in results.iter().zip(expected.iter()) {
             match (res, exp) {
                 (
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: rk,
                         value: rv,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: ek,
                         value: ev,
                         lsn: elsn,
@@ -89,12 +89,12 @@ mod frozen_tests {
                     assert!(*rts > 0);
                 }
                 (
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: rk,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: ek,
                         lsn: elsn,
                         timestamp: ets,
@@ -105,13 +105,13 @@ mod frozen_tests {
                     assert!(*rts > 0);
                 }
                 (
-                    MemtableScanResult::RangeDelete {
+                    Record::RangeDelete {
                         start: rk,
                         end: rks,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::RangeDelete {
+                    Record::RangeDelete {
                         start: ek,
                         end: eks,
                         lsn: elsn,
@@ -148,17 +148,17 @@ mod frozen_tests {
 
         assert!(records.iter().any(|r| matches!(
             r,
-            MemtableRecord::Put { key, .. } if key == b"b"
+            Record::Put { key, .. } if key == b"b"
         )));
 
         assert!(records.iter().any(|r| matches!(
             r,
-            MemtableRecord::Delete { key, .. } if key == b"a"
+            Record::Delete { key, .. } if key == b"a"
         )));
 
         assert!(records.iter().any(|r| matches!(
             r,
-            MemtableRecord::RangeDelete { start, end, .. }
+            Record::RangeDelete { start, end, .. }
                 if start == b"c" && end == b"e"
         )));
     }
@@ -181,7 +181,7 @@ mod frozen_tests {
         assert!(wal_path.exists(), "WAL file was removed prematurely");
 
         // WAL must still be replayable
-        let wal = Wal::<MemtableRecord>::open(&wal_path, None).unwrap();
+        let wal = Wal::<Record>::open(&wal_path, None).unwrap();
         let records: Vec<_> = wal.replay_iter().unwrap().map(|r| r.unwrap()).collect();
 
         assert_eq!(records.len(), 3);

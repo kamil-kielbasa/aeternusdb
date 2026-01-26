@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod scan_tests {
-    use crate::memtable::{Memtable, MemtableScanResult};
+    use crate::memtable::{Memtable, Record};
     use tempfile::TempDir;
 
     #[test]
@@ -20,7 +20,7 @@ mod scan_tests {
 
         for (i, result) in results.iter().enumerate() {
             match result {
-                MemtableScanResult::Put {
+                Record::Put {
                     key,
                     value,
                     lsn,
@@ -55,7 +55,7 @@ mod scan_tests {
 
         for (i, result) in results.iter().enumerate() {
             match result {
-                MemtableScanResult::Put {
+                Record::Put {
                     key,
                     value,
                     lsn,
@@ -92,41 +92,41 @@ mod scan_tests {
         assert_eq!(results.len(), 7);
 
         let expected = vec![
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key0".to_vec(),
                 value: b"value0".to_vec(),
                 lsn: 1,
                 timestamp: 0,
             },
-            MemtableScanResult::Delete {
+            Record::Delete {
                 key: b"key1".to_vec(),
                 lsn: 6,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),
                 lsn: 2,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key2".to_vec(),
                 value: b"value2".to_vec(),
                 lsn: 3,
                 timestamp: 0,
             },
-            MemtableScanResult::Delete {
+            Record::Delete {
                 key: b"key3".to_vec(),
                 lsn: 7,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key3".to_vec(),
                 value: b"value3".to_vec(),
                 lsn: 4,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key4".to_vec(),
                 value: b"value4".to_vec(),
                 lsn: 5,
@@ -138,13 +138,13 @@ mod scan_tests {
         for (res, exp) in results.iter().zip(expected.iter()) {
             match (res, exp) {
                 (
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: rk,
                         value: rv,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: ek,
                         value: ev,
                         lsn: elsn,
@@ -157,12 +157,12 @@ mod scan_tests {
                     assert!(*rts > 0);
                 }
                 (
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: rk,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: ek,
                         lsn: elsn,
                         timestamp: ets,
@@ -225,37 +225,37 @@ mod scan_tests {
         let results: Vec<_> = memtable.scan(b"key0", b"key5\xff").unwrap().collect();
 
         let expected = vec![
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key0".to_vec(),
                 value: b"value0".to_vec(),
                 lsn: 1,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),
                 lsn: 2,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key2".to_vec(),
                 value: b"value2".to_vec(),
                 lsn: 3,
                 timestamp: 0,
             },
-            MemtableScanResult::RangeDelete {
+            Record::RangeDelete {
                 start: b"key3".to_vec(),
                 end: b"key5".to_vec(),
                 lsn: 6,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key3".to_vec(),
                 value: b"value3".to_vec(),
                 lsn: 4,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key4".to_vec(),
                 value: b"value4".to_vec(),
                 lsn: 5,
@@ -267,13 +267,13 @@ mod scan_tests {
         for (res, exp) in results.iter().zip(expected.iter()) {
             match (res, exp) {
                 (
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: rk,
                         value: rv,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: ek,
                         value: ev,
                         lsn: elsn,
@@ -286,13 +286,13 @@ mod scan_tests {
                     assert!(*rts > 0);
                 }
                 (
-                    MemtableScanResult::RangeDelete {
+                    Record::RangeDelete {
                         start: rk,
                         end: rks,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::RangeDelete {
+                    Record::RangeDelete {
                         start: ek,
                         end: eks,
                         lsn: elsn,
@@ -353,101 +353,101 @@ mod scan_tests {
         let results: Vec<_> = memtable.scan(b"key0", b"key9\xff").unwrap().collect();
 
         let expected = vec![
-            MemtableScanResult::Delete {
+            Record::Delete {
                 key: b"key0".to_vec(),
                 lsn: 16,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key0".to_vec(),
                 value: b"value0".to_vec(),
                 lsn: 1,
                 timestamp: 0,
             },
-            MemtableScanResult::Delete {
+            Record::Delete {
                 key: b"key1".to_vec(),
                 lsn: 17,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key1".to_vec(),
                 value: b"value1".to_vec(),
                 lsn: 2,
                 timestamp: 0,
             },
-            MemtableScanResult::RangeDelete {
+            Record::RangeDelete {
                 start: b"key2".to_vec(),
                 end: b"key6".to_vec(),
                 lsn: 11,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key2".to_vec(),
                 value: b"value2".to_vec(),
                 lsn: 3,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key3".to_vec(),
                 value: b"new_value3".to_vec(),
                 lsn: 12,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key3".to_vec(),
                 value: b"value3".to_vec(),
                 lsn: 4,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key4".to_vec(),
                 value: b"new_value4".to_vec(),
                 lsn: 13,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key4".to_vec(),
                 value: b"value4".to_vec(),
                 lsn: 5,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key5".to_vec(),
                 value: b"value5".to_vec(),
                 lsn: 6,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key6".to_vec(),
                 value: b"value6".to_vec(),
                 lsn: 7,
                 timestamp: 0,
             },
-            MemtableScanResult::RangeDelete {
+            Record::RangeDelete {
                 start: b"key7".to_vec(),
                 end: b"key10".to_vec(),
                 lsn: 14,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key7".to_vec(),
                 value: b"value7".to_vec(),
                 lsn: 8,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key8".to_vec(),
                 value: b"new_value8".to_vec(),
                 lsn: 15,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key8".to_vec(),
                 value: b"value8".to_vec(),
                 lsn: 9,
                 timestamp: 0,
             },
-            MemtableScanResult::Put {
+            Record::Put {
                 key: b"key9".to_vec(),
                 value: b"value9".to_vec(),
                 lsn: 10,
@@ -459,13 +459,13 @@ mod scan_tests {
         for (res, exp) in results.iter().zip(expected.iter()) {
             match (res, exp) {
                 (
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: rk,
                         value: rv,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: ek,
                         value: ev,
                         lsn: elsn,
@@ -478,12 +478,12 @@ mod scan_tests {
                     assert!(*rts > 0);
                 }
                 (
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: rk,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: ek,
                         lsn: elsn,
                         timestamp: ets,
@@ -494,13 +494,13 @@ mod scan_tests {
                     assert!(*rts > 0);
                 }
                 (
-                    MemtableScanResult::RangeDelete {
+                    Record::RangeDelete {
                         start: rk,
                         end: rks,
                         lsn: rlsn,
                         timestamp: rts,
                     },
-                    MemtableScanResult::RangeDelete {
+                    Record::RangeDelete {
                         start: ek,
                         end: eks,
                         lsn: elsn,

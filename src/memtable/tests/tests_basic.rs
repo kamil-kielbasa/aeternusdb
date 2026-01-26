@@ -1,8 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::memtable::{
-        Memtable, MemtableError, MemtableGetResult, MemtableRecord, MemtableScanResult,
-    };
+    use crate::memtable::{Memtable, MemtableError, MemtableGetResult, Record};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
@@ -92,7 +90,7 @@ mod tests {
 
         for record in &flushed {
             match record {
-                MemtableRecord::Put { key, value, .. } => match key.as_slice() {
+                Record::Put { key, value, .. } => match key.as_slice() {
                     b"key1" => {
                         assert_eq!(value, b"value1");
                         found_key1 = true;
@@ -111,13 +109,13 @@ mod tests {
                     }
                     _ => panic!("Unexpected put key: {:?}", String::from_utf8_lossy(key)),
                 },
-                MemtableRecord::Delete { key, .. } => match key.as_slice() {
+                Record::Delete { key, .. } => match key.as_slice() {
                     b"key2" => found_key2_delete = true,
                     b"key9" => found_key9_delete = true,
                     b"key10" => found_key10_delete = true,
                     _ => panic!("Unexpected delete key: {:?}", String::from_utf8_lossy(key)),
                 },
-                MemtableRecord::RangeDelete { start, .. } => match start.as_slice() {
+                Record::RangeDelete { start, .. } => match start.as_slice() {
                     b"key5" => found_range_delete_1 = true,
                     b"key11" => found_range_delete_2 = true,
                     b"key15" => found_range_delete_3 = true,
@@ -179,7 +177,7 @@ mod tests {
 
         // Put a
         match &scanned[0] {
-            MemtableScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -194,7 +192,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            MemtableScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,

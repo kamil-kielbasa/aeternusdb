@@ -74,7 +74,7 @@
 //! - Decode the compact on-disk representation of block entries (`SSTableCell`).
 //! - Support forward iteration through a data block.
 //! - Provide efficient `seek_to_first()` and `seek_to(key)` operations.
-//! - Form the basis for higher-level SSTable iterators (`SSTScanResult`, merging, etc.).
+//! - Form the basis for higher-level SSTable iterators (`Record`, merging, etc.).
 //!
 //! ## Block Format Overview
 //!
@@ -237,6 +237,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::engine::Record;
 use bincode::{
     config::{Configuration, Fixint, LittleEndian, standard},
     decode_from_slice, encode_to_vec,
@@ -497,88 +498,6 @@ impl SSTGetResult {
             SSTGetResult::RangeDelete { timestamp, .. } => *timestamp,
             SSTGetResult::NotFound => 0,
         }
-    }
-}
-
-/// Represents a single item emitted during an SSTable scan.
-#[derive(Debug, Clone)]
-pub enum SSTScanResult {
-    /// A concrete key-value pair (point put) encountered during the scan.
-    Put {
-        /// The key stored in the SST.
-        key: Vec<u8>,
-
-        /// The value associated with the key.
-        value: Vec<u8>,
-
-        /// LSN at which this version was written.
-        lsn: u64,
-
-        /// Timestamp associated with this version.
-        timestamp: u64,
-    },
-
-    /// A point deletion encountered during the scan.
-    Delete {
-        /// The key that was deleted.
-        key: Vec<u8>,
-
-        /// LSN of the deletion tombstone.
-        lsn: u64,
-
-        /// Timestamp of the deletion.
-        timestamp: u64,
-    },
-
-    /// A range tombstone representing deletion of a key interval `[start_key, end_key)`.
-    ///
-    /// The scan returns the range tombstone *once*, not per key.
-    /// Global compaction/scan logic must later apply it to keys from all SST iterators.
-    RangeDelete {
-        /// Start key of the deleted interval (inclusive).
-        start_key: Vec<u8>,
-
-        /// End key of the deleted interval (exclusive).
-        end_key: Vec<u8>,
-
-        /// LSN of the range tombstone.
-        lsn: u64,
-
-        /// Timestamp associated with the range tombstone.
-        timestamp: u64,
-    },
-}
-
-impl SSTScanResult {
-    /// Returns the **primary key** associated with this scan item.
-    pub fn key(&self) -> &[u8] {
-        match self {
-            SSTScanResult::Put { key, .. } => key,
-            SSTScanResult::Delete { key, .. } => key,
-            SSTScanResult::RangeDelete { start_key, .. } => start_key,
-        }
-    }
-
-    /// Returns the **LSN** (logical sequence number) associated with this scan item.
-    pub fn lsn(&self) -> u64 {
-        match self {
-            SSTScanResult::Put { lsn, .. } => *lsn,
-            SSTScanResult::Delete { lsn, .. } => *lsn,
-            SSTScanResult::RangeDelete { lsn, .. } => *lsn,
-        }
-    }
-
-    /// Returns the **timestamp** associated with this scan item.
-    pub fn timestamp(&self) -> u64 {
-        match self {
-            SSTScanResult::Put { timestamp, .. } => *timestamp,
-            SSTScanResult::Delete { timestamp, .. } => *timestamp,
-            SSTScanResult::RangeDelete { timestamp, .. } => *timestamp,
-        }
-    }
-
-    pub fn cmp(a: &SSTScanResult, b: &SSTScanResult) -> std::cmp::Ordering {
-        a.key().cmp(b.key()).then_with(|| b.lsn().cmp(&a.lsn()))
     }
 }
 
@@ -982,7 +901,7 @@ impl SSTable {
         &self,
         start_key: &[u8],
         end_key: &[u8],
-    ) -> Result<impl Iterator<Item = SSTScanResult>, SSTableError> {
+    ) -> Result<impl Iterator<Item = Record>, SSTableError> {
         SSTableScanIterator::new(self, start_key.to_vec(), end_key.to_vec())
     }
 
@@ -1241,7 +1160,7 @@ impl Iterator for BlockIterator {
 /// [start_key, end_key)
 /// ```
 ///
-/// This iterator yields items of type [`SSTScanResult`].
+/// This iterator yields items of type [`Record`].
 ///
 /// Internally, it:
 ///
@@ -1270,10 +1189,10 @@ pub struct SSTableScanIterator<'a> {
     pending_range_idx: usize,
 
     /// Next range tombstone to yield.
-    next_range: Option<SSTScanResult>,
+    next_range: Option<Record>,
 
     /// Next point entry (Put/Delete) to yield.
-    next_point: Option<SSTScanResult>,
+    next_point: Option<Record>,
 }
 
 impl<'a> SSTableScanIterator<'a> {
@@ -1338,7 +1257,7 @@ impl<'a> SSTableScanIterator<'a> {
 
     /// Return the next *point entry* (Put/Delete) in the scan key range,
     /// automatically advancing to the next block as needed.
-    fn next_point_or_delete(&mut self) -> Option<SSTScanResult> {
+    fn next_point_or_delete(&mut self) -> Option<Record> {
         loop {
             let Some(it) = self.current_block_iter.as_mut() else {
                 return None;
@@ -1351,13 +1270,13 @@ impl<'a> SSTableScanIterator<'a> {
                 }
 
                 if item.is_delete {
-                    return Some(SSTScanResult::Delete {
+                    return Some(Record::Delete {
                         key: item.key,
                         lsn: item.lsn,
                         timestamp: item.timestamp,
                     });
                 } else {
-                    return Some(SSTScanResult::Put {
+                    return Some(Record::Put {
                         key: item.key,
                         value: item.value,
                         lsn: item.lsn,
@@ -1375,7 +1294,7 @@ impl<'a> SSTableScanIterator<'a> {
     }
 
     /// Return the next range tombstone that overlaps the scan range.
-    fn next_range_delete(&mut self) -> Option<SSTScanResult> {
+    fn next_range_delete(&mut self) -> Option<Record> {
         while self.pending_range_idx < self.sstable.range_deletes.data.len() {
             let r = &self.sstable.range_deletes.data[self.pending_range_idx];
 
@@ -1393,9 +1312,9 @@ impl<'a> SSTableScanIterator<'a> {
             // Emit range
             self.pending_range_idx += 1;
 
-            return Some(SSTScanResult::RangeDelete {
-                start_key: r.start_key.clone(),
-                end_key: r.end_key.clone(),
+            return Some(Record::RangeDelete {
+                start: r.start_key.clone(),
+                end: r.end_key.clone(),
                 lsn: r.lsn,
                 timestamp: r.timestamp,
             });
@@ -1420,7 +1339,7 @@ impl<'a> SSTableScanIterator<'a> {
 }
 
 impl<'a> Iterator for SSTableScanIterator<'a> {
-    type Item = SSTScanResult;
+    type Item = Record;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.fill_range();
@@ -1433,7 +1352,11 @@ impl<'a> Iterator for SSTableScanIterator<'a> {
             (None, Some(_)) => self.next_point.take(),
 
             (Some(r), Some(p)) => {
-                if SSTScanResult::cmp(r, p).is_le() {
+                if r.key()
+                    .cmp(p.key())
+                    .then_with(|| p.lsn().cmp(&r.lsn()))
+                    .is_le()
+                {
                     self.next_range.take()
                 } else {
                     self.next_point.take()

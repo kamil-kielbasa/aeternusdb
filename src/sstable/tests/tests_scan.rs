@@ -1,8 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::sstable::{
-        self, MemtablePointEntry, MemtableRangeTombstone, SSTScanResult, SSTable,
-    };
+    use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, Record, SSTable};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
@@ -65,12 +63,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len() + ranges.len());
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -85,7 +83,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -100,7 +98,7 @@ mod tests {
         }
 
         match &scanned[2] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -140,12 +138,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len() + ranges.len());
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -160,7 +158,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::Delete {
+            Record::Delete {
                 key,
                 lsn,
                 timestamp,
@@ -173,7 +171,7 @@ mod tests {
         }
 
         match &scanned[2] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -208,19 +206,19 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len() + ranges.len());
 
         match &scanned[0] {
-            SSTScanResult::RangeDelete {
-                start_key,
-                end_key,
+            Record::RangeDelete {
+                start,
+                end,
                 lsn,
                 timestamp,
             } => {
-                assert_eq!(start_key.as_slice(), b"a");
-                assert_eq!(end_key.as_slice(), b"z");
+                assert_eq!(start.as_slice(), b"a");
+                assert_eq!(end.as_slice(), b"z");
                 assert_eq!(*lsn, 50);
                 assert_eq!(*timestamp, 999);
             }
@@ -256,12 +254,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len() + ranges.len());
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -276,14 +274,14 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::RangeDelete {
-                start_key,
-                end_key,
+            Record::RangeDelete {
+                start,
+                end,
                 lsn,
                 timestamp,
             } => {
-                assert_eq!(start_key.as_slice(), b"b");
-                assert_eq!(end_key.as_slice(), b"d");
+                assert_eq!(start.as_slice(), b"b");
+                assert_eq!(end.as_slice(), b"d");
                 assert_eq!(*lsn, 5);
                 assert_eq!(*timestamp, 50);
             }
@@ -291,7 +289,7 @@ mod tests {
         }
 
         match &scanned[2] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -306,7 +304,7 @@ mod tests {
         }
 
         match &scanned[3] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -321,7 +319,7 @@ mod tests {
         }
 
         match &scanned[4] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -371,12 +369,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"z").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len() + ranges.len());
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -391,7 +389,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -406,7 +404,7 @@ mod tests {
         }
 
         match &scanned[2] {
-            SSTScanResult::Delete {
+            Record::Delete {
                 key,
                 lsn,
                 timestamp,
@@ -419,7 +417,7 @@ mod tests {
         }
 
         match &scanned[3] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -434,14 +432,14 @@ mod tests {
         }
 
         match &scanned[4] {
-            SSTScanResult::RangeDelete {
-                start_key,
-                end_key,
+            Record::RangeDelete {
+                start,
+                end,
                 lsn,
                 timestamp,
             } => {
-                assert_eq!(start_key.as_slice(), b"b");
-                assert_eq!(end_key.as_slice(), b"f");
+                assert_eq!(start.as_slice(), b"b");
+                assert_eq!(end.as_slice(), b"f");
                 assert_eq!(*lsn, 7);
                 assert_eq!(*timestamp, 16);
             }
@@ -449,7 +447,7 @@ mod tests {
         }
 
         match &scanned[5] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -464,7 +462,7 @@ mod tests {
         }
 
         match &scanned[6] {
-            SSTScanResult::Delete {
+            Record::Delete {
                 key,
                 lsn,
                 timestamp,
@@ -477,7 +475,7 @@ mod tests {
         }
 
         match &scanned[7] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -492,14 +490,14 @@ mod tests {
         }
 
         match &scanned[8] {
-            SSTScanResult::RangeDelete {
-                start_key,
-                end_key,
+            Record::RangeDelete {
+                start,
+                end,
                 lsn,
                 timestamp,
             } => {
-                assert_eq!(start_key.as_slice(), b"d");
-                assert_eq!(end_key.as_slice(), b"z");
+                assert_eq!(start.as_slice(), b"d");
+                assert_eq!(end.as_slice(), b"z");
                 assert_eq!(*lsn, 10);
                 assert_eq!(*timestamp, 19);
             }
@@ -507,7 +505,7 @@ mod tests {
         }
 
         match &scanned[9] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -522,7 +520,7 @@ mod tests {
         }
 
         match &scanned[10] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -557,12 +555,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"a", b"d").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"a", b"d").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len());
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -577,7 +575,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -612,12 +610,12 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"d", b"z").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"d", b"z").unwrap().collect();
 
         assert_eq!(scanned.len(), points.len());
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -632,7 +630,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -675,13 +673,13 @@ mod tests {
         .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
-        let scanned: Vec<SSTScanResult> = sst.scan(b"c", b"e").unwrap().collect();
+        let scanned: Vec<Record> = sst.scan(b"c", b"e").unwrap().collect();
 
         // Should return c and d only
         assert_eq!(scanned.len(), 2);
 
         match &scanned[0] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,
@@ -696,7 +694,7 @@ mod tests {
         }
 
         match &scanned[1] {
-            SSTScanResult::Put {
+            Record::Put {
                 key,
                 value,
                 lsn,

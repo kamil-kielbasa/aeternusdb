@@ -38,7 +38,6 @@ mod tests;
 use std::{
     cmp::Reverse,
     collections::BTreeMap,
-    os::unix::raw::pid_t,
     path::Path,
     sync::{
         Arc, RwLock,
@@ -47,6 +46,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::engine::Record;
 use crate::wal::{Wal, WalError};
 use thiserror::Error;
 use tracing::{error, info, trace};
@@ -97,7 +97,7 @@ pub struct Memtable {
     inner: Arc<RwLock<MemtableInner>>,
 
     /// Associated write-ahead log for durability.
-    pub wal: Wal<MemtableRecord>,
+    pub wal: Wal<Record>,
 
     /// Monotonic log sequence number (LSN) for version ordering.
     next_lsn: AtomicU64,
@@ -144,40 +144,6 @@ pub struct MemtableRangeTombstone {
     pub timestamp: u64,
 }
 
-/// A logical WAL record representing a memtable mutation.
-///
-/// These records:
-/// - Are appended to the WAL
-/// - Are replayed during recovery
-/// - Are emitted during memtable flush
-///
-/// Together, they form a complete, replayable history.
-#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
-pub enum MemtableRecord {
-    /// Insert or update a single key.
-    Put {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        lsn: u64,
-        timestamp: u64,
-    },
-
-    /// Delete a single key.
-    Delete {
-        key: Vec<u8>,
-        lsn: u64,
-        timestamp: u64,
-    },
-
-    /// Delete all keys in `[start, end)`.
-    RangeDelete {
-        start: Vec<u8>,
-        end: Vec<u8>,
-        lsn: u64,
-        timestamp: u64,
-    },
-}
-
 /// Result of a `get` operation on the memtable.
 #[derive(Debug, PartialEq)]
 pub enum MemtableGetResult {
@@ -192,50 +158,6 @@ pub enum MemtableGetResult {
 
     /// Key not found in the memtable.
     NotFound,
-}
-
-#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
-pub enum MemtableScanResult {
-    /// Insert or update a single key.
-    Put {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        lsn: u64,
-        timestamp: u64,
-    },
-
-    /// Delete a single key.
-    Delete {
-        key: Vec<u8>,
-        lsn: u64,
-        timestamp: u64,
-    },
-
-    /// Delete all keys in `[start, end)`.
-    RangeDelete {
-        start: Vec<u8>,
-        end: Vec<u8>,
-        lsn: u64,
-        timestamp: u64,
-    },
-}
-
-impl MemtableScanResult {
-    pub fn lsn(&self) -> u64 {
-        match self {
-            MemtableScanResult::Put { lsn, .. } => *lsn,
-            MemtableScanResult::Delete { lsn, .. } => *lsn,
-            MemtableScanResult::RangeDelete { lsn, .. } => *lsn,
-        }
-    }
-
-    pub fn key_start(&self) -> &Vec<u8> {
-        match self {
-            MemtableScanResult::Put { key, .. } => key,
-            MemtableScanResult::Delete { key, .. } => key,
-            MemtableScanResult::RangeDelete { start, .. } => start,
-        }
-    }
 }
 
 /// Internal shared state of the memtable.
@@ -291,10 +213,10 @@ impl Memtable {
 
         let records = wal.replay_iter()?;
         for record in records {
-            let record: MemtableRecord = record?;
+            let record: Record = record?;
 
             match record {
-                MemtableRecord::Put {
+                Record::Put {
                     key,
                     value,
                     lsn,
@@ -322,7 +244,7 @@ impl Memtable {
                         .insert(Reverse(record_value.lsn), record_value);
                 }
 
-                MemtableRecord::Delete {
+                Record::Delete {
                     key,
                     lsn,
                     timestamp,
@@ -348,7 +270,7 @@ impl Memtable {
                         .insert(Reverse(record_value.lsn), record_value);
                 }
 
-                MemtableRecord::RangeDelete {
+                Record::RangeDelete {
                     start,
                     end,
                     lsn,
@@ -407,7 +329,7 @@ impl Memtable {
         let timestamp = Self::current_timestamp();
 
         let record_size = std::mem::size_of::<MemtableSingleEntry>() + key.len() + value.len();
-        let record = MemtableRecord::Put {
+        let record = Record::Put {
             key: key.clone(),
             value: value.clone(),
             timestamp,
@@ -468,7 +390,7 @@ impl Memtable {
         let timestamp = Self::current_timestamp();
 
         let record_size = std::mem::size_of::<MemtableSingleEntry>() + key.len();
-        let record = MemtableRecord::Delete {
+        let record = Record::Delete {
             key: key.clone(),
             lsn,
             timestamp,
@@ -537,7 +459,7 @@ impl Memtable {
         let timestamp = Self::current_timestamp();
 
         let record_size = std::mem::size_of::<MemtableRangeTombstone>() + start.len() + end.len();
-        let record = MemtableRecord::RangeDelete {
+        let record = Record::RangeDelete {
             start: start.clone(),
             end: end.clone(),
             lsn,
@@ -670,7 +592,7 @@ impl Memtable {
         &self,
         start: &[u8],
         end: &[u8],
-    ) -> Result<impl Iterator<Item = MemtableScanResult>, MemtableError> {
+    ) -> Result<impl Iterator<Item = Record>, MemtableError> {
         trace!(
             "scan() started with range. Start key: {} end key: {}",
             HexKey(start),
@@ -692,13 +614,13 @@ impl Memtable {
         for (key, versions) in guard.tree.range(start.to_vec()..end.to_vec()) {
             for entry in versions.values() {
                 let record = if entry.is_delete {
-                    MemtableScanResult::Delete {
+                    Record::Delete {
                         key: key.clone(),
                         lsn: entry.lsn,
                         timestamp: entry.timestamp,
                     }
                 } else {
-                    MemtableScanResult::Put {
+                    Record::Put {
                         key: key.clone(),
                         value: entry.value.clone().unwrap(),
                         lsn: entry.lsn,
@@ -718,7 +640,7 @@ impl Memtable {
                     continue;
                 }
 
-                let record = MemtableScanResult::RangeDelete {
+                let record = Record::RangeDelete {
                     start: tombstone.start.clone(),
                     end: tombstone.end.clone(),
                     lsn: tombstone.lsn,
@@ -731,8 +653,8 @@ impl Memtable {
 
         // 3) Sort stream: key ASC, lsn DESC
         out.sort_by(|a, b| {
-            let ka = a.key_start();
-            let kb = b.key_start();
+            let ka = a.key();
+            let kb = b.key();
 
             match ka.cmp(kb) {
                 std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()), // Descending LSN
@@ -756,7 +678,7 @@ impl Memtable {
     ///
     /// # Intended Use
     /// This iterator is consumed by the SSTable writer.
-    pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = MemtableRecord>, MemtableError> {
+    pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = Record>, MemtableError> {
         let guard = self.inner.read().map_err(|_| {
             error!("Read-write lock poisoned during iter_for_flush");
             MemtableError::Internal("Read-write lock poisoned".into())
@@ -767,13 +689,13 @@ impl Memtable {
         for (key, versions) in guard.tree.iter() {
             if let Some(entry) = versions.values().next() {
                 let record = if entry.is_delete {
-                    MemtableRecord::Delete {
+                    Record::Delete {
                         key: key.clone(),
                         lsn: entry.lsn,
                         timestamp: entry.timestamp,
                     }
                 } else {
-                    MemtableRecord::Put {
+                    Record::Put {
                         key: key.clone(),
                         value: entry.value.clone().unwrap(),
                         lsn: entry.lsn,
@@ -786,7 +708,7 @@ impl Memtable {
 
         for (start, versions) in guard.range_tombstones.iter() {
             for entry in versions.values() {
-                let record = MemtableRecord::RangeDelete {
+                let record = Record::RangeDelete {
                     start: start.clone(),
                     end: entry.end.clone(),
                     lsn: entry.lsn,
@@ -874,12 +796,12 @@ impl FrozenMemtable {
         &self,
         start: &[u8],
         end: &[u8],
-    ) -> Result<impl Iterator<Item = MemtableScanResult>, MemtableError> {
+    ) -> Result<impl Iterator<Item = Record>, MemtableError> {
         self.memtable.scan(start, end)
     }
 
     /// Returns all records required to materialize this memtable into an SSTable.
-    pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = MemtableRecord>, MemtableError> {
+    pub fn iter_for_flush(&self) -> Result<impl Iterator<Item = Record>, MemtableError> {
         self.memtable.iter_for_flush()
     }
 

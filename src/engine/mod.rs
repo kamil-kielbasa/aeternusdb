@@ -2,6 +2,8 @@
 //!
 //!
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -9,8 +11,11 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
-use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableGetResult, MemtableRecord};
+use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableGetResult};
 use crate::sstable::{self, SSTable, SSTableError};
+
+pub mod utils;
+pub use utils::Record;
 
 #[cfg(test)]
 mod tests;
@@ -448,8 +453,8 @@ impl Engine {
 
     pub fn scan(
         &self,
-        start_key: Vec<u8>,
-        end_key: Vec<u8>,
+        start_key: &[u8],
+        end_key: &[u8],
     ) -> Result<EngineScanIterator, EngineError> {
         unimplemented!()
     }
@@ -484,7 +489,7 @@ impl Engine {
 
         for record in records {
             match record {
-                MemtableRecord::Put {
+                Record::Put {
                     key,
                     value,
                     lsn,
@@ -497,7 +502,7 @@ impl Engine {
                         timestamp,
                     });
                 }
-                MemtableRecord::Delete {
+                Record::Delete {
                     key,
                     lsn,
                     timestamp,
@@ -509,7 +514,7 @@ impl Engine {
                         timestamp,
                     });
                 }
-                MemtableRecord::RangeDelete {
+                Record::RangeDelete {
                     start,
                     end,
                     lsn,
