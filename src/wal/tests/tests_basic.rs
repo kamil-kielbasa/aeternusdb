@@ -4,8 +4,7 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::{Seek, SeekFrom, Write};
     use tempfile::TempDir;
-    use tracing::Level;
-    use tracing_subscriber::fmt::Subscriber;
+    use tracing_subscriber::EnvFilter;
 
     const WAL_CRC32_SIZE: usize = std::mem::size_of::<u32>();
     const WAL_HDR_SIZE: usize = 20;
@@ -26,8 +25,9 @@ mod tests {
     }
 
     fn init_tracing() {
-        let _ = Subscriber::builder()
-            .with_max_level(Level::TRACE)
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_test_writer()
             .try_init();
     }
 

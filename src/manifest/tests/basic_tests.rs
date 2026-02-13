@@ -3,16 +3,16 @@ mod tests {
     use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
     use std::fs;
     use tempfile::TempDir;
-    use tracing::Level;
-    use tracing_subscriber::fmt::Subscriber;
+    use tracing_subscriber::EnvFilter;
 
     fn open_manifest(temp: &TempDir) -> Manifest {
         Manifest::open(temp.path()).expect("Manifest open failed")
     }
 
     fn init_tracing() {
-        let _ = Subscriber::builder()
-            .with_max_level(Level::TRACE)
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_test_writer()
             .try_init();
     }
 

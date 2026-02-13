@@ -167,8 +167,7 @@ impl Engine {
         // 4. Load SSTables from manifest.
         let mut sstable_handles = Vec::new();
         for sstable_entry in sstables {
-            let path = format!("sstable-{}.sst", sstable_entry.id);
-            let sstable = SSTable::open(&path)?;
+            let sstable = SSTable::open(&sstable_entry.path)?;
             sstable_handles.push(sstable);
         }
 
@@ -269,8 +268,9 @@ impl Engine {
             Ok(()) => Ok(()),
 
             Err(MemtableError::FlushRequired) => {
-                // Get WAL ID before moving the memtable
+                // Get WAL ID and current max LSN before moving the memtable
                 let frozen_wal_id = inner.active.wal.header.wal_seq;
+                let current_max_lsn = inner.active.max_lsn();
                 let new_active_wal_id = frozen_wal_id + 1;
 
                 // Create new active memtable
@@ -288,6 +288,9 @@ impl Engine {
                 let frozen = old_active.frozen()?;
                 // Insert at beginning to maintain sorted order (newest first)
                 inner.frozen.insert(0, frozen);
+
+                // Ensure LSN continuity: new memtable must continue from where the old one left off
+                inner.active.inject_max_lsn(current_max_lsn);
 
                 inner.manifest.add_frozen_wal(frozen_wal_id)?;
                 inner.manifest.set_active_wal(new_active_wal_id)?;
@@ -318,8 +321,9 @@ impl Engine {
             Ok(()) => Ok(()),
 
             Err(MemtableError::FlushRequired) => {
-                // Get WAL ID before moving the memtable
+                // Get WAL ID and current max LSN before moving the memtable
                 let frozen_wal_id = inner.active.wal.header.wal_seq;
+                let current_max_lsn = inner.active.max_lsn();
                 let new_active_wal_id = frozen_wal_id + 1;
 
                 // Create new active memtable
@@ -337,6 +341,9 @@ impl Engine {
                 let frozen = old_active.frozen()?;
                 // Insert at beginning to maintain sorted order (newest first)
                 inner.frozen.insert(0, frozen);
+
+                // Ensure LSN continuity: new memtable must continue from where the old one left off
+                inner.active.inject_max_lsn(current_max_lsn);
 
                 inner.manifest.add_frozen_wal(frozen_wal_id)?;
                 inner.manifest.set_active_wal(new_active_wal_id)?;
@@ -370,8 +377,9 @@ impl Engine {
             Ok(()) => Ok(()),
 
             Err(MemtableError::FlushRequired) => {
-                // Get WAL ID before moving the memtable
+                // Get WAL ID and current max LSN before moving the memtable
                 let frozen_wal_id = inner.active.wal.header.wal_seq;
+                let current_max_lsn = inner.active.max_lsn();
                 let new_active_wal_id = frozen_wal_id + 1;
 
                 // Create new active memtable
@@ -389,6 +397,9 @@ impl Engine {
                 let frozen = old_active.frozen()?;
                 // Insert at beginning to maintain sorted order (newest first)
                 inner.frozen.insert(0, frozen);
+
+                // Ensure LSN continuity: new memtable must continue from where the old one left off
+                inner.active.inject_max_lsn(current_max_lsn);
 
                 inner.manifest.add_frozen_wal(frozen_wal_id)?;
                 inner.manifest.set_active_wal(new_active_wal_id)?;
@@ -455,8 +466,40 @@ impl Engine {
         &self,
         start_key: &[u8],
         end_key: &[u8],
+    ) -> Result<impl Iterator<Item = (Vec<u8>, Vec<u8>)>, EngineError> {
+        let merged = self.raw_scan(start_key, end_key)?;
+        Ok(VisibilityFilter::new(merged))
+    }
+
+    fn raw_scan(
+        &self,
+        start_key: &[u8],
+        end_key: &[u8],
     ) -> Result<EngineScanIterator, EngineError> {
-        unimplemented!()
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        let mut iters: Vec<Box<dyn Iterator<Item = Record>>> = Vec::new();
+
+        // Active memtable - collect to own the data
+        let active_records: Vec<_> = inner.active.scan(start_key, end_key)?.collect();
+        iters.push(Box::new(active_records.into_iter()));
+
+        // Frozen memtables - collect to own the data
+        for frozen in &inner.frozen {
+            let records: Vec<_> = frozen.scan(start_key, end_key)?.collect();
+            iters.push(Box::new(records.into_iter()));
+        }
+
+        // SSTables - collect to own the data
+        for sstable in &inner.sstables {
+            let records: Vec<_> = sstable.scan(start_key, end_key)?.collect();
+            iters.push(Box::new(records.into_iter()));
+        }
+
+        Ok(EngineScanIterator::new(iters))
     }
 
     pub fn stats(&self) -> Result<EngineStats, EngineError> {
@@ -588,4 +631,158 @@ impl Engine {
     }
 }
 
-pub struct EngineScanIterator {}
+pub struct EngineScanIterator {
+    iters: Vec<Box<dyn Iterator<Item = Record>>>,
+    heap: BinaryHeap<ScanHeapEntry>,
+}
+
+struct ScanHeapEntry {
+    record: Record,
+    source_idx: usize,
+}
+
+impl Ord for ScanHeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // We want the heap to be a min-heap based on key and LSN, so we reverse the order
+        utils::record_cmp(&self.record, &other.record).reverse()
+    }
+}
+
+impl PartialOrd for ScanHeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for ScanHeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.record.lsn() == other.record.lsn() && self.record.key() == other.record.key()
+    }
+}
+
+impl Eq for ScanHeapEntry {}
+
+impl EngineScanIterator {
+    pub fn new(mut iters: Vec<Box<dyn Iterator<Item = Record>>>) -> Self {
+        let mut heap = BinaryHeap::new();
+
+        for (idx, iter) in iters.iter_mut().enumerate() {
+            if let Some(record) = iter.next() {
+                heap.push(ScanHeapEntry {
+                    record,
+                    source_idx: idx,
+                });
+            }
+        }
+
+        Self { iters, heap }
+    }
+}
+
+impl Iterator for EngineScanIterator {
+    type Item = Record;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.heap.pop()?;
+
+        let result = item.record;
+        let idx = item.source_idx;
+
+        if let Some(next_record) = self.iters[idx].next() {
+            self.heap.push(ScanHeapEntry {
+                record: next_record,
+                source_idx: idx,
+            });
+        }
+
+        Some(result)
+    }
+}
+
+pub struct VisibilityFilter<I>
+where
+    I: Iterator<Item = Record>,
+{
+    input: I, // The underlying iterator of records (already sorted by key and LSN)
+    current_key: Option<Vec<u8>>, // The key currently being processed
+    active_ranges: Vec<RangeTombstone>, // Only range tombstones that cover the current key
+}
+
+impl<I> VisibilityFilter<I>
+where
+    I: Iterator<Item = Record>,
+{
+    pub fn new(input: I) -> Self {
+        Self {
+            input,
+            current_key: None,
+            active_ranges: Vec::new(),
+        }
+    }
+}
+
+struct RangeTombstone {
+    start: Vec<u8>,
+    end: Vec<u8>,
+    lsn: u64,
+    timestamp: u64,
+}
+
+impl<I> Iterator for VisibilityFilter<I>
+where
+    I: Iterator<Item = Record>,
+{
+    type Item = (Vec<u8>, Vec<u8>); // (key, value)
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(record) = self.input.next() {
+            match record {
+                Record::RangeDelete {
+                    start,
+                    end,
+                    lsn,
+                    timestamp,
+                } => {
+                    self.active_ranges.push(RangeTombstone {
+                        start,
+                        end,
+                        lsn,
+                        timestamp,
+                    });
+                    continue; // Range tombstone itself is not returned
+                }
+
+                Record::Delete { key, lsn, .. } => {
+                    self.current_key = Some(key.clone());
+                    continue;
+                }
+
+                Record::Put {
+                    key, value, lsn, ..
+                } => {
+                    // Skip if we've already handled this key
+                    if self.current_key.as_deref() == Some(&key) {
+                        continue;
+                    }
+
+                    // Check range tombstones
+                    let deleted = self.active_ranges.iter().any(|r| {
+                        r.start.as_slice() <= key.as_slice()
+                            && key.as_slice() < r.end.as_slice()
+                            && r.lsn > lsn
+                    });
+
+                    self.current_key = Some(key.clone());
+
+                    if deleted {
+                        continue; // This record is shadowed by a range tombstone
+                    }
+
+                    return Some((key, value));
+                }
+            }
+        }
+
+        None
+    }
+}

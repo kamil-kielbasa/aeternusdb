@@ -69,3 +69,10 @@ impl Record {
         }
     }
 }
+
+pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
+    match a.key().cmp(b.key()) {
+        std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()),
+        other => other,
+    }
+}
