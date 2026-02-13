@@ -58,7 +58,7 @@ use std::{
     sync::Mutex,
 };
 use thiserror::Error;
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, warn};
 
 const SNAPSHOT_TMP_SUFFIX: &str = ".tmp";
 const SNAPSHOT_FILENAME: &str = "manifest.snapshot";

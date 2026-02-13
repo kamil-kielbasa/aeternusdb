@@ -1,6 +1,15 @@
 //! Scan correctness tests: ordering, dedup, tombstone filtering.
+//!
+//! ## Layer coverage
+//! - `memtable__*`: memtable only (64 KB buffer)
+//! - `memtable_sstable__*`: memtable + SSTable merge path
+//!
+//! ## See also
+//! - [`tests_multi_sstable`] — scan across ≥2 SSTables
+//! - [`tests_hardening`] `visibility_*` — edge cases for scan visibility
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -11,7 +20,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_returns_sorted_keys() {
+    fn memtable__scan_returns_sorted_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -33,7 +42,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_no_duplicate_keys() {
+    fn memtable__scan_no_duplicate_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -52,7 +61,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_excludes_point_deleted_keys() {
+    fn memtable__scan_excludes_point_deleted_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -73,7 +82,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_excludes_range_deleted_keys() {
+    fn memtable__scan_excludes_range_deleted_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -104,7 +113,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_shows_resurrected_key() {
+    fn memtable__scan_shows_resurrected_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -125,7 +134,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_empty_range() {
+    fn memtable__scan_empty_range() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -142,7 +151,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_prefix_range() {
+    fn memtable__scan_prefix_range() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -165,7 +174,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_merges_memtable_and_sstable() {
+    fn memtable_sstable__scan_merges_layers() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "sk");
 
@@ -189,7 +198,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_overwrite_shows_latest_value_across_layers() {
+    fn memtable_sstable__scan_overwrite_shows_latest() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "ow");
 
@@ -208,7 +217,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_delete_hides_sstable_key() {
+    fn memtable_sstable__scan_delete_hides_key() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "sd");
 
@@ -229,7 +238,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_range_delete_hides_sstable_keys() {
+    fn memtable_sstable__scan_range_delete_hides_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "sr");
 
@@ -257,7 +266,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_many_overwrites_shows_latest() {
+    fn memtable__scan_many_overwrites_shows_latest() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 

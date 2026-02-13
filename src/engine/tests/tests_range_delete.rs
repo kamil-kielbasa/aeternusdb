@@ -1,6 +1,16 @@
 //! Range-delete correctness tests.
+//!
+//! ## Layer coverage
+//! - `memtable__*`: memtable only (64 KB buffer)
+//! - `memtable_sstable__*`: range tombstones hiding SSTable keys
+//!
+//! ## See also
+//! - [`tests_precedence`] — range vs point delete/put LSN ordering
+//! - [`tests_layers`] `range_*` — range tombstone interaction across layers
+//! - [`tests_lsn_continuity`] — range tombstone ordering after reopen
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -41,7 +51,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_single_key_via_range() {
+    fn memtable__range_delete_single_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 10);
@@ -65,7 +75,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_partial() {
+    fn memtable__range_delete_partial() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 10);
@@ -91,7 +101,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_empty_range_is_noop() {
+    fn memtable__range_delete_empty_range_is_noop() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 5);
@@ -117,7 +127,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_overlapping_ranges() {
+    fn memtable__range_delete_overlapping() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 20);
@@ -147,7 +157,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_nested_ranges() {
+    fn memtable__range_delete_nested() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 20);
@@ -177,7 +187,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_adjacent_ranges() {
+    fn memtable__range_delete_adjacent() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 20);
@@ -206,7 +216,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_beyond_existing_keys() {
+    fn memtable__range_delete_beyond_existing() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 10);
@@ -225,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn range_delete_all_keys() {
+    fn memtable__range_delete_all_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 10);
@@ -245,7 +255,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_hides_sstable_keys() {
+    fn memtable_sstable__range_delete_hides_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 

@@ -1,6 +1,14 @@
 //! Precedence tests: range vs point delete/put, LSN ordering.
+//!
+//! ## Layer coverage
+//! - All tests use `memtable` only (64 KB buffer, no flushes)
+//!
+//! ## See also
+//! - [`tests_layers`] — same precedence rules across memtable ↔ SSTable layers
+//! - [`tests_lsn_continuity`] — precedence across reopen cycles
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -11,7 +19,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn newer_range_delete_beats_older_put() {
+    fn memtable__newer_range_delete_beats_older_put() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -31,7 +39,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn newer_put_beats_older_range_delete() {
+    fn memtable__newer_put_beats_older_range_delete() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -58,7 +66,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn point_delete_inside_range() {
+    fn memtable__point_delete_inside_range() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -95,7 +103,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn put_inside_range_after_range_delete() {
+    fn memtable__put_inside_range_after_delete() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -131,7 +139,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn interleaved_ranges_and_puts() {
+    fn memtable__interleaved_ranges_and_puts() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -167,7 +175,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn point_delete_after_range_delete_and_put() {
+    fn memtable__point_delete_after_range_and_put() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 

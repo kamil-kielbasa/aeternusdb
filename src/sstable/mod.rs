@@ -246,7 +246,7 @@ use bloomfilter::Bloom;
 use crc32fast::Hasher as Crc32;
 use memmap2::Mmap;
 use thiserror::Error;
-use tracing::{error, info, trace};
+use tracing::error;
 
 // ------------------------------------------------------------------------------------------------
 // Constants
@@ -296,7 +296,7 @@ pub enum SSTableError {
 /// SSTable file header, written at the beginning of the SSTable.
 /// Contains a magic number, version, and CRC32 checksum for integrity.
 #[derive(Default, bincode::Encode, bincode::Decode)]
-struct SSTableHeader {
+pub(crate) struct SSTableHeader {
     /// Magic bytes to identify SSTable format (`b"SST0"`).
     magic: [u8; 4],
 
@@ -316,14 +316,14 @@ struct SSTableDataBlock {
 
 /// Represents a Bloom filter block used to quickly check the presence of point keys.
 #[derive(bincode::Encode, bincode::Decode)]
-struct SSTableBloomBlock {
+pub(crate) struct SSTableBloomBlock {
     /// Serialized bloom filter bytes.
     data: Vec<u8>,
 }
 
 /// Represents a block containing range tombstones.
 #[derive(bincode::Encode, bincode::Decode)]
-struct SSTableRangeTombstoneDataBlock {
+pub(crate) struct SSTableRangeTombstoneDataBlock {
     /// List of serialized range tombstone cells.
     data: Vec<SSTableRangeTombstoneCell>,
 }
@@ -364,7 +364,7 @@ pub struct SSTablePropertiesBlock {
 
 /// Index entry pointing to a specific data block.
 #[derive(bincode::Encode, bincode::Decode)]
-struct SSTableIndexEntry {
+pub(crate) struct SSTableIndexEntry {
     /// Key that separates this block from the next in sorted order.
     separator_key: Vec<u8>,
 
@@ -374,7 +374,7 @@ struct SSTableIndexEntry {
 
 /// SSTable footer, stored at the very end of the file.
 #[derive(bincode::Encode, bincode::Decode)]
-struct SSTableFooter {
+pub(crate) struct SSTableFooter {
     /// Handle of the metaindex block, containing references to:
     /// - bloom filter block
     /// - properties block
@@ -593,7 +593,7 @@ impl SSTable {
 
         header.header_crc = 0;
 
-        let mut header_bytes = encode_to_vec(&header, config)?;
+        let header_bytes = encode_to_vec(&header, config)?;
 
         let mut hasher = Crc32::new();
         hasher.update(&header_bytes);
@@ -1060,7 +1060,7 @@ impl BlockIterator {
         while self.cursor < self.data.len() {
             match decode_from_slice::<SSTableCell, _>(&self.data[self.cursor..], self.config) {
                 Ok((cell, cell_len)) => {
-                    let mut pos = self.cursor + cell_len;
+                    let pos = self.cursor + cell_len;
 
                     let key_len = cell.key_len as usize;
                     let value_len = cell.value_len as usize;
@@ -1662,7 +1662,7 @@ pub fn build_from_iterators(
             },
         });
 
-        block_first_key = None;
+        let _ = block_first_key;
     }
 
     // 3. Write bloom filter

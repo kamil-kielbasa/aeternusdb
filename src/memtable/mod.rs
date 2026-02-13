@@ -633,7 +633,7 @@ impl Memtable {
         }
 
         // 2) Collect range tombstones
-        for (start_key, versions) in guard.range_tombstones.iter() {
+        for (_start_key, versions) in guard.range_tombstones.iter() {
             for tombstone in versions.values() {
                 // Check if tombstone overlaps scan range
                 if tombstone.end.as_slice() <= start || tombstone.start.as_slice() >= end {

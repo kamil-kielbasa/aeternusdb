@@ -1,6 +1,15 @@
 //! Put/Get correctness tests — memtable-only and with SSTables.
+//!
+//! ## Layer coverage
+//! - `memtable__*`: memtable only (64 KB buffer, no flushes)
+//! - `memtable_sstable__*`: memtable + SSTable (4 KB buffer, triggers flush)
+//!
+//! ## See also
+//! - [`tests_delete`] — point-delete correctness
+//! - [`tests_recovery`] — put/get durability across close → reopen
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -11,7 +20,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn put_get_single_key() {
+    fn memtable__put_get_single_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -23,7 +32,7 @@ mod tests {
     }
 
     #[test]
-    fn get_missing_key_returns_none() {
+    fn memtable__get_missing_key_returns_none() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -31,7 +40,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_key_returns_latest_value() {
+    fn memtable__overwrite_key_returns_latest_value() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -43,7 +52,7 @@ mod tests {
     }
 
     #[test]
-    fn many_keys() {
+    fn memtable__many_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -61,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_key_sizes() {
+    fn memtable__mixed_key_sizes() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -79,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn large_value() {
+    fn memtable__large_value() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -93,7 +102,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn put_get_across_sstable_flush() {
+    fn memtable_sstable__put_get_across_flush() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 
@@ -105,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_across_sstable_boundary() {
+    fn memtable_sstable__overwrite_across_boundary() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), default_config()).unwrap();
 

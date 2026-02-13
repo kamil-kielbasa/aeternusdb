@@ -3,8 +3,16 @@
 //! Every test in this module guarantees that data is spread across at least 2
 //! SSTables (1 KB write buffer → ~1 KB+ per SSTable) so that reads, deletes,
 //! and scans must merge results from multiple on-disk tables.
+//!
+//! ## Layer coverage
+//! - All tests use `memtable_sstable` with ≥2 SSTables (1 KB buffer)
+//!
+//! ## See also
+//! - [`tests_layers`] — layer shadowing with single SSTable
+//! - [`tests_scan`] — scan basics before multi-SSTable merge
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -15,7 +23,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn get_all_keys_across_multiple_sstables() {
+    fn memtable_sstable__get_all_keys_across_multi() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "mg");
 
@@ -36,7 +44,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn overwrite_across_multiple_sstables() {
+    fn memtable_sstable__overwrite_across_multi() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), multi_sstable_config()).unwrap();
 
@@ -81,7 +89,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn point_delete_hides_key_in_older_sstable() {
+    fn memtable_sstable__point_delete_hides_in_older() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "pd");
 
@@ -118,7 +126,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn delete_and_reinsert_across_sstables() {
+    fn memtable_sstable__delete_and_reinsert() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "dr");
 
@@ -155,7 +163,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_spans_multiple_sstables() {
+    fn memtable_sstable__range_delete_spans_multi() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "rr");
 
@@ -192,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_range_deletes_across_sstables() {
+    fn memtable_sstable__overlapping_range_deletes() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "or");
 
@@ -237,7 +245,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_in_sstable_then_put_in_memtable() {
+    fn memtable_sstable__range_delete_then_put() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "rp");
 
@@ -298,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn newer_point_delete_beats_older_sstable_put() {
+    fn memtable_sstable__newer_delete_beats_older_put() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "np");
 
@@ -312,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_deletes_and_puts_across_sstables() {
+    fn memtable_sstable__interleaved_deletes_and_puts() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "ip");
 
@@ -357,7 +365,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_sorted_and_deduped_across_sstables() {
+    fn memtable_sstable__scan_sorted_deduped() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "ss");
 
@@ -379,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_excludes_deletes_across_sstables() {
+    fn memtable_sstable__scan_excludes_deletes() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "sd");
 
@@ -406,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_excludes_range_deletes_across_sstables() {
+    fn memtable_sstable__scan_excludes_range_deletes() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "sr");
 
@@ -431,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_shows_overwrites_across_sstables() {
+    fn memtable_sstable__scan_shows_overwrites() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_multi_sstables(tmp.path(), 100, "so");
 
@@ -462,7 +470,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn reopen_preserves_data_across_multiple_sstables() {
+    fn memtable_sstable__reopen_preserves_data() {
         let tmp = TempDir::new().unwrap();
 
         {

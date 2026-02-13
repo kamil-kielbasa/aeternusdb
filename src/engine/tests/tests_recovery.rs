@@ -1,6 +1,15 @@
 //! Recovery / reopen tests: verify durability across close → reopen.
+//!
+//! ## Layer coverage
+//! - All tests use `memtable_sstable` (close flushes WAL/frozen → SSTable)
+//! - `memtable_sstable__wal_replay_*`: WAL-only recovery (large buffer, no SSTable flush)
+//!
+//! ## See also
+//! - [`tests_crash_recovery`] — drop without close() (frozen WAL replay path)
+//! - [`tests_lsn_continuity`] — LSN ordering correctness after reopen
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -11,7 +20,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn data_survives_close_reopen() {
+    fn memtable_sstable__data_survives_close_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -37,7 +46,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn overwrite_survives_reopen() {
+    fn memtable_sstable__overwrite_survives_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -56,7 +65,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn delete_survives_reopen() {
+    fn memtable_sstable__delete_survives_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -75,7 +84,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_survives_reopen() {
+    fn memtable_sstable__range_delete_survives_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -124,7 +133,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn sstable_data_survives_reopen() {
+    fn memtable_sstable__sstable_data_survives_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -151,7 +160,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn multiple_reopen_cycles() {
+    fn memtable_sstable__multiple_reopen_cycles() {
         let tmp = TempDir::new().unwrap();
 
         for cycle in 0..3 {
@@ -185,7 +194,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn wal_replay_recovers_memtable_data() {
+    fn memtable_sstable__wal_replay_recovers_data() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -209,7 +218,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn scan_works_after_reopen() {
+    fn memtable_sstable__scan_works_after_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -237,7 +246,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn delete_tombstone_durable_after_reopen() {
+    fn memtable_sstable__delete_tombstone_durable_after_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {
@@ -275,7 +284,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn overwrite_chain_survives_reopen() {
+    fn memtable_sstable__overwrite_chain_survives_reopen() {
         let tmp = TempDir::new().unwrap();
 
         {

@@ -1,9 +1,14 @@
 pub mod helpers;
+mod tests_crash_recovery;
 mod tests_delete;
+mod tests_edge_cases;
+mod tests_hardening;
 mod tests_layers;
+mod tests_lsn_continuity;
 mod tests_multi_sstable;
 mod tests_precedence;
 mod tests_put_get;
 mod tests_range_delete;
 mod tests_recovery;
 mod tests_scan;
+mod tests_stress;

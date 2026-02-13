@@ -1,6 +1,7 @@
 //! Layer-interaction tests: memtable ↔ frozen ↔ SSTable ordering and shadowing.
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -11,7 +12,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_delete_in_memtable_hides_sstable_value() {
+    fn memtable_sstable__range_delete_hides_sstable_value() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 
@@ -44,7 +45,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn newer_sstable_shadows_older() {
+    fn memtable_sstable__newer_sstable_shadows_older() {
         let tmp = TempDir::new().unwrap();
 
         // First batch → creates SSTables with "old" values
@@ -94,7 +95,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn active_memtable_overrides_frozen() {
+    fn memtable_sstable__active_memtable_overrides_frozen() {
         let tmp = TempDir::new().unwrap();
         // Use small buffer so writes fill the memtable quickly → freeze
         let engine = Engine::open(tmp.path(), small_buffer_config()).unwrap();
@@ -131,7 +132,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn delete_in_newer_layer_hides_older_sstable() {
+    fn memtable_sstable__delete_hides_older_sstable() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 
@@ -148,7 +149,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn range_in_newer_sst_masks_older_point_puts() {
+    fn memtable_sstable__range_masks_older_puts() {
         let tmp = TempDir::new().unwrap();
 
         // Populate first batch
@@ -187,7 +188,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn put_in_active_resurrects_sstable_deleted_key() {
+    fn memtable_sstable__put_resurrects_deleted_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), default_config()).unwrap();
 
@@ -218,7 +219,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn mixed_ops_across_multiple_flushes() {
+    fn memtable_sstable__mixed_ops_across_flushes() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), default_config()).unwrap();
 

@@ -752,7 +752,7 @@ where
                     continue; // Range tombstone itself is not returned
                 }
 
-                Record::Delete { key, lsn, .. } => {
+                Record::Delete { key, .. } => {
                     self.current_key = Some(key.clone());
                     continue;
                 }

@@ -1,6 +1,15 @@
 //! Point-delete correctness tests.
+//!
+//! ## Layer coverage
+//! - `memtable__*`: memtable only (64 KB buffer, no flushes)
+//! - `memtable_sstable__*`: memtable + SSTable (4 KB buffer, triggers flush)
+//!
+//! ## See also
+//! - [`tests_range_delete`] — range-delete coverage
+//! - [`tests_precedence`] — delete vs range-delete LSN ordering
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use crate::engine::Engine;
     use crate::engine::tests::helpers::*;
@@ -11,7 +20,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn delete_existing_key() {
+    fn memtable__delete_existing_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -23,7 +32,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_nonexistent_key_is_noop() {
+    fn memtable__delete_nonexistent_key_is_noop() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -33,7 +42,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_then_put_resurrects_key() {
+    fn memtable__delete_then_put_resurrects_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -46,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn put_then_delete_hides_key() {
+    fn memtable__put_then_delete_hides_key() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -56,7 +65,7 @@ mod tests {
     }
 
     #[test]
-    fn double_delete() {
+    fn memtable__double_delete() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -67,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_alternating_keys() {
+    fn memtable__delete_alternating_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
 
@@ -103,7 +112,7 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn delete_key_in_sstable() {
+    fn memtable_sstable__delete_key_in_sstable() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 
@@ -116,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_in_sstable_then_put_in_memtable() {
+    fn memtable_sstable__delete_then_put_resurrects() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 
@@ -133,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_many_sstable_keys() {
+    fn memtable_sstable__delete_many_keys() {
         let tmp = TempDir::new().unwrap();
         let engine = engine_with_sstables(tmp.path(), 200, "key");
 
