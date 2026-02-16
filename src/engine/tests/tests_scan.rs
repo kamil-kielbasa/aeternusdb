@@ -1,12 +1,20 @@
 //! Scan correctness tests: ordering, dedup, tombstone filtering.
 //!
+//! These tests verify the `scan()` range-query API. A correct scan must:
+//! 1. Return keys in strictly sorted (lexicographic) order.
+//! 2. Deduplicate keys that have been overwritten, returning only the latest value.
+//! 3. Exclude keys hidden by point-delete or range-delete tombstones.
+//! 4. Correctly merge results from the active memtable, frozen memtables,
+//!    and SSTables when data spans multiple storage layers.
+//!
 //! ## Layer coverage
-//! - `memtable__*`: memtable only (64 KB buffer)
-//! - `memtable_sstable__*`: memtable + SSTable merge path
+//! - `memtable__*`: memtable only (64 KB buffer — all data in memory)
+//! - `memtable_sstable__*`: memtable + SSTable merge path (4 KB buffer)
 //!
 //! ## See also
 //! - [`tests_multi_sstable`] — scan across ≥2 SSTables
 //! - [`tests_hardening`] `visibility_*` — edge cases for scan visibility
+//! - [`tests_edge_cases`] — scan boundary semantics (start=end, inverted ranges)
 
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -19,6 +27,19 @@ mod tests {
     // Scan returns keys in sorted order
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Scan must return keys in ascending lexicographic order regardless of
+    /// insertion order.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Insert keys `"d"`, `"a"`, `"c"`, `"b"`, `"e"` (deliberately unordered).
+    /// 2. Scan range `["a", "f")`.
+    ///
+    /// # Expected behavior
+    /// Keys are returned in sorted order: `["a", "b", "c", "d", "e"]`.
     #[test]
     fn memtable__scan_returns_sorted_keys() {
         let tmp = TempDir::new().unwrap();
@@ -41,6 +62,19 @@ mod tests {
     // Scan: no duplicate keys
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Overwriting a key multiple times must not produce duplicate entries
+    /// in the scan output.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put key `"k"` three times: `"v1"`, `"v2"`, `"v3"`.
+    /// 2. Scan range `["k", "l")`.
+    ///
+    /// # Expected behavior
+    /// Scan returns exactly 1 entry: `("k", "v3")` — only the latest value.
     #[test]
     fn memtable__scan_no_duplicate_keys() {
         let tmp = TempDir::new().unwrap();
@@ -60,6 +94,19 @@ mod tests {
     // Scan: deleted keys are not returned
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Point-deleted keys must be excluded from scan results.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put keys `"a"`, `"b"`, `"c"`.
+    /// 2. Delete key `"b"`.
+    /// 3. Scan range `["a", "d")`.
+    ///
+    /// # Expected behavior
+    /// Scan returns `["a", "c"]` — `"b"` is hidden by its tombstone.
     #[test]
     fn memtable__scan_excludes_point_deleted_keys() {
         let tmp = TempDir::new().unwrap();
@@ -81,6 +128,20 @@ mod tests {
     // Scan: range-deleted keys are excluded
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Range-deleted keys must be excluded from scan results.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put 20 keys (`key_00`..`key_19`).
+    /// 2. Range-delete `["key_05", "key_15")` — covers keys 05–14.
+    /// 3. Scan range `["key_00", "key_99")`.
+    ///
+    /// # Expected behavior
+    /// Returns 10 keys: `key_00`–`key_04` and `key_15`–`key_19`.
+    /// All keys within the range-delete interval are excluded.
     #[test]
     fn memtable__scan_excludes_range_deleted_keys() {
         let tmp = TempDir::new().unwrap();
@@ -112,6 +173,22 @@ mod tests {
     // Scan: resurrected key in range shows latest value
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A key that was deleted and then re-inserted (resurrected) must appear
+    /// in the scan with its latest value.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put `"a"`, `"b"`, `"c"`.
+    /// 2. Delete `"b"`.
+    /// 3. Re-insert `"b"` = `"revived"`.
+    /// 4. Scan range `["a", "d")`.
+    ///
+    /// # Expected behavior
+    /// Scan returns 3 keys; `"b"` appears with value `"revived"` — the
+    /// re-insert (highest LSN) overrides the tombstone.
     #[test]
     fn memtable__scan_shows_resurrected_key() {
         let tmp = TempDir::new().unwrap();
@@ -133,6 +210,17 @@ mod tests {
     // Scan: empty range returns nothing
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Scan over a range that contains no keys.
+    ///
+    /// # Starting environment
+    /// Engine with two keys `"a"` and `"b"`.
+    ///
+    /// # Actions
+    /// 1. Scan range `["x", "z")` — no keys exist in this range.
+    ///
+    /// # Expected behavior
+    /// Returns an empty result.
     #[test]
     fn memtable__scan_empty_range() {
         let tmp = TempDir::new().unwrap();
@@ -150,6 +238,18 @@ mod tests {
     // Scan: prefix range returns correct subset
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Scan using a prefix range to retrieve a logical subset of keys.
+    ///
+    /// # Starting environment
+    /// Engine with 3 `"user:"` keys and 2 `"item:"` keys.
+    ///
+    /// # Actions
+    /// 1. Scan range `["user:", "user:\xff")` — prefix scan for user keys.
+    ///
+    /// # Expected behavior
+    /// Returns exactly the 3 `"user:"` keys in sorted order; `"item:"` keys
+    /// are outside the range and excluded.
     #[test]
     fn memtable__scan_prefix_range() {
         let tmp = TempDir::new().unwrap();
@@ -173,6 +273,20 @@ mod tests {
     // Scan across memtable + SSTable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Scan merges data from SSTables and the active memtable.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables (via `engine_with_sstables`).
+    ///
+    /// # Actions
+    /// 1. Insert a fresh key `"sk_9990"` = `"fresh"` into the active memtable.
+    /// 2. Scan range `["sk_", "sk_\xff")`.
+    ///
+    /// # Expected behavior
+    /// Scan returns ≥201 keys (200 from SSTables + 1 from memtable),
+    /// including `("sk_9990", "fresh")` — the merge correctly combines
+    /// data from both layers.
     #[test]
     fn memtable_sstable__scan_merges_layers() {
         let tmp = TempDir::new().unwrap();
@@ -197,6 +311,21 @@ mod tests {
     // Scan: overwrite in memtable shows latest across SSTable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Overwriting a key that exists in an SSTable — scan must show
+    /// the latest (memtable) value.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables; `ow_0050` has an older
+    /// value in the SSTable.
+    ///
+    /// # Actions
+    /// 1. Overwrite `ow_0050` = `"updated"` in the active memtable.
+    /// 2. Scan the narrow range `["ow_0050", "ow_0051")`.
+    ///
+    /// # Expected behavior
+    /// Returns exactly 1 entry: `("ow_0050", "updated")` — the memtable
+    /// value (higher LSN) wins over the SSTable value.
     #[test]
     fn memtable_sstable__scan_overwrite_shows_latest() {
         let tmp = TempDir::new().unwrap();
@@ -216,6 +345,19 @@ mod tests {
     // Scan: delete in memtable hides SSTable key
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A point-delete in the memtable hides an SSTable key from scan.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. Delete `sd_0050` from the active memtable.
+    /// 2. Scan range `["sd_0049", "sd_0052")`.
+    ///
+    /// # Expected behavior
+    /// `sd_0050` is absent from the results; `sd_0049` and `sd_0051` are present.
+    /// The memtable tombstone correctly masks the SSTable entry during scan.
     #[test]
     fn memtable_sstable__scan_delete_hides_key() {
         let tmp = TempDir::new().unwrap();
@@ -237,6 +379,19 @@ mod tests {
     // Scan: range delete in memtable hides SSTable keys in scan
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete in the memtable hides multiple SSTable keys from scan.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. Range-delete `["sr_0040", "sr_0060")` from the memtable.
+    /// 2. Scan range `["sr_0030", "sr_0070")`.
+    ///
+    /// # Expected behavior
+    /// Returns 20 keys: `sr_0030`–`sr_0039` and `sr_0060`–`sr_0069`.
+    /// The 20 keys inside the range-delete interval are excluded.
     #[test]
     fn memtable_sstable__scan_range_delete_hides_keys() {
         let tmp = TempDir::new().unwrap();
@@ -265,6 +420,20 @@ mod tests {
     // Scan: many overwrites → only latest value per key
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Multiple overwrites of the same keys — scan must show only the
+    /// latest value per key.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Overwrite 10 keys (`mk_00`..`mk_09`) across 5 rounds (round 0–4).
+    /// 2. Scan range `["mk_", "mk_\xff")`.
+    ///
+    /// # Expected behavior
+    /// Returns exactly 10 entries, each with the value from round 4
+    /// (the last round). No duplicates from earlier rounds.
     #[test]
     fn memtable__scan_many_overwrites_shows_latest() {
         let tmp = TempDir::new().unwrap();

@@ -2,6 +2,23 @@
 //! under realistic churn — multiple SSTables with realistic sizes, heavy overwrites,
 //! tombstone accumulation, and recovery after thousands of operations.
 //!
+//! These tests are the "big-gun" verification layer: they execute thousands of
+//! randomised operations against a predictable PRNG sequence and verify that
+//! every key's final state matches an in-memory oracle (`HashMap`). Categories:
+//!
+//! 1. **Heavy mixed CRUD** — 8 000 random put/delete/range-delete/overwrite ops
+//!    on 500 keys, then point-get every key.
+//! 2. **Scan consistency** — same random workload, verified with a full-range
+//!    `scan()` against a sorted expected-live set.
+//! 3. **Write-delete-rewrite churn** — 50 deterministic rounds of
+//!    "write all → delete half → resurrect quarter" on 200 keys.
+//! 4. **Recovery after massive session** — graceful `close()` → `reopen` →
+//!    full verify (get + scan).
+//! 5. **Crash recovery after massive session** — drop without `close()` →
+//!    `reopen` → full verify.
+//! 6. **Scan with many range tombstones** — 1 000 keys, 50 overlapping
+//!    range-deletes, selective resurrections, verified via scan + get.
+//!
 //! All stress tests use `default_config()` (4 KB write buffer) to produce
 //! realistic multi-KB SSTables, matching what compaction would actually operate on.
 //!
@@ -97,6 +114,24 @@ mod tests {
     // 1. Heavy mixed CRUD — 8000+ ops on 500 keys, verify every key via get
     // ================================================================
 
+    /// # Scenario
+    /// Exercises the engine with 8 000 randomised operations (put 60 %,
+    /// point-delete 20 %, range-delete 15 %, overwrite 5 %) across 500
+    /// keys, then verifies every key against an in-memory oracle.
+    ///
+    /// # Starting environment
+    /// Fresh engine with `default_config()` (4 KB write buffer) — flushes
+    /// occur naturally during the workload, producing multiple SSTables.
+    ///
+    /// # Actions
+    /// 1. Execute 8 000 PRNG-driven operations (seed `42`), tracking the
+    ///    expected state in a `HashMap<Key, Option<Value>>`.
+    /// 2. Get each of the 500 keys and compare to the oracle.
+    /// 3. Assert at least 2 SSTables were created.
+    ///
+    /// # Expected behavior
+    /// Every key's `get()` result matches the oracle. Multiple SSTables
+    /// exist, confirming cross-layer merges were exercised.
     #[test]
     #[ignore] // Slow. Run with: cargo test -- --ignored
     fn memtable_sstable__stress_heavy_mixed_crud() {
@@ -155,6 +190,23 @@ mod tests {
     // 2. Scan consistency after heavy writes
     // ================================================================
 
+    /// # Scenario
+    /// Same randomised workload as test 1, but verified via `scan()` instead
+    /// of individual `get()` calls.
+    ///
+    /// # Starting environment
+    /// Fresh engine with `default_config()` — no data.
+    ///
+    /// # Actions
+    /// 1. Execute 8 000 PRNG-driven operations (seed `0xDEAD`) with the same
+    ///    op-distribution (55 % put, 20 % delete, 15 % range-delete, 10 % overwrite).
+    /// 2. Build sorted expected-live set from the oracle.
+    /// 3. Full-range scan `[key_, key_\xff)`.
+    /// 4. Compare count, sort order, and each key-value pair.
+    ///
+    /// # Expected behavior
+    /// Scan result length matches expected, entries are strictly sorted,
+    /// and every key-value pair is identical to the oracle.
     #[test]
     #[ignore] // Slow. Run with: cargo test -- --ignored
     fn memtable_sstable__stress_scan_consistency() {
@@ -231,6 +283,26 @@ mod tests {
     // 3. Write-delete-rewrite churn on same keys
     // ================================================================
 
+    /// # Scenario
+    /// 50 deterministic rounds of "write all → delete even → resurrect
+    /// every 4th" on 200 keys, then verify final state and scan count.
+    ///
+    /// # Starting environment
+    /// Fresh engine with `default_config()` — no data.
+    ///
+    /// # Actions
+    /// For each of 50 rounds:
+    /// 1. Put all 200 keys with round-tagged values.
+    /// 2. Delete all even-indexed keys.
+    /// 3. Re-insert every 4th key (a subset of the deleted even keys) with
+    ///    `"resurrected_r{round}_{i}"`.
+    /// After round 49, get all 200 keys and run a full scan.
+    ///
+    /// # Expected behavior
+    /// - Keys `i % 4 == 0`: `Some("resurrected_r49_{i}")`.
+    /// - Keys `i % 2 == 0 && i % 4 != 0`: `None`.
+    /// - Odd keys: `Some("val_r49_{i}")`.
+    /// - Scan returns exactly 150 surviving entries (100 odd + 50 every-4th).
     #[test]
     #[ignore] // Slow. Run with: cargo test -- --ignored
     fn memtable_sstable__stress_write_delete_rewrite() {
@@ -311,6 +383,23 @@ mod tests {
     // 4. Recovery after massive session (close → reopen → full verify)
     // ================================================================
 
+    /// # Scenario
+    /// Graceful recovery: run 8 000 random operations, close the engine,
+    /// reopen, and verify every key (get + scan).
+    ///
+    /// # Starting environment
+    /// Fresh engine with `default_config()` — no data.
+    ///
+    /// # Actions
+    /// 1. Execute 8 000 PRNG-driven operations (seed `0xCAFE`).
+    /// 2. `close()` the engine (flushes active memtable).
+    /// 3. `reopen()` the engine from the same directory.
+    /// 4. Verify every key against the oracle via `get()`.
+    /// 5. Full-range scan — compare count and pairs to oracle.
+    ///
+    /// # Expected behavior
+    /// All data survives the close/reopen cycle. Every key matches the
+    /// oracle, and the scan result is sorted and complete.
     #[test]
     #[ignore] // Slow. Run with: cargo test -- --ignored
     fn memtable_sstable__stress_recovery_massive() {
@@ -376,6 +465,23 @@ mod tests {
     // 5. Crash recovery after massive session (drop without close)
     // ================================================================
 
+    /// # Scenario
+    /// Crash recovery: run 8 000 random operations, drop the engine
+    /// *without* calling `close()`, reopen, and verify every key.
+    ///
+    /// # Starting environment
+    /// Fresh engine with `default_config()` — no data.
+    ///
+    /// # Actions
+    /// 1. Execute 8 000 PRNG-driven operations (seed `0xBEEF`).
+    /// 2. Drop the engine (simulates crash — active memtable not flushed).
+    /// 3. `reopen()` from the same directory (WAL replay recovers the
+    ///    active memtable).
+    /// 4. Verify every key against the oracle via `get()`.
+    ///
+    /// # Expected behavior
+    /// All data survives the crash. WAL replay restores the active
+    /// memtable contents, and every key matches the oracle.
     #[test]
     #[ignore] // Slow. Run with: cargo test -- --ignored
     fn memtable_sstable__stress_crash_recovery_massive() {
@@ -427,6 +533,29 @@ mod tests {
     // 6. Multi-SSTable scan with many range tombstones
     // ================================================================
 
+    /// # Scenario
+    /// A dense tombstone landscape: 1 000 keys, 50 overlapping range-deletes
+    /// (stride-of-7 vs window-of-10 creates complex overlaps), selective
+    /// resurrections every 13th key, verified via both scan and individual gets.
+    ///
+    /// # Starting environment
+    /// Fresh engine with `default_config()` — no data.
+    ///
+    /// # Actions
+    /// 1. Insert 1 000 keys (`key_0000`–`key_0999`).
+    /// 2. Issue 50 range-deletes: for `r` in 0..50, delete `[key_{r*7}, key_{r*7+10})`.
+    /// 3. Resurrect every 13th key (`key_0000`, `key_0013`, …) with
+    ///    `"resurrected_{:04}"`.
+    /// 4. Build ground-truth expected-live set.
+    /// 5. Full-range scan — compare count, sort order, and each pair.
+    /// 6. Individual `get()` for all 1 000 keys.
+    ///
+    /// # Expected behavior
+    /// - Resurrected keys: latest value is `"resurrected_{:04}"`.
+    /// - Deleted (and not resurrected) keys: `None`.
+    /// - Untouched keys: original `"val_{:04}"`.
+    /// Scan is strictly sorted, count matches oracle, and every key-value
+    /// pair is identical.
     #[test]
     #[ignore] // Slow. Run with: cargo test -- --ignored
     fn memtable_sstable__stress_scan_range_tombstones() {

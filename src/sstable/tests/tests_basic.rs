@@ -1,3 +1,20 @@
+//! SSTable build / open / format-verification tests.
+//!
+//! These tests exercise the lowest-level SSTable lifecycle: building a file
+//! from memtable iterators, re-opening it, and validating every on-disk
+//! structural block (header, properties, index, bloom filter, range-delete
+//! block, and footer).
+//!
+//! Coverage:
+//! - Round-trip build → open with points + range tombstones
+//! - Rejection of empty iterators (no data at all)
+//! - Range-deletes-only SSTable (no point entries)
+//! - Points-only SSTable (no range tombstones)
+//!
+//! ## See also
+//! - [`tests_get`]  — intra-SSTable `get()` with LSN resolution
+//! - [`tests_scan`] — raw unresolved SSTable scan output
+
 #[cfg(test)]
 mod tests {
     use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, SSTable, SSTableError};
@@ -40,8 +57,32 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Build + open round-trip
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Build an SSTable from a mix of puts, a point-delete, and two range
+    /// tombstones, then re-open and verify every structural block.
+    ///
+    /// # Starting environment
+    /// No SSTable file on disk.
+    ///
+    /// # Actions
+    /// 1. `build_from_iterators` with 3 puts + 1 point-delete + 2 range
+    ///    tombstones.
+    /// 2. `SSTable::open` the resulting file.
+    ///
+    /// # Expected behavior
+    /// - Header: magic = `SST0`, version = 1.
+    /// - Properties: 4 records, 1 tombstone, 2 range tombstones;
+    ///   correct min/max key/LSN/timestamp.
+    /// - Range-delete block contains both tombstones.
+    /// - Index entries have non-empty keys and valid offsets.
+    /// - Bloom filter recognises all four point keys.
+    /// - Footer `total_file_size` matches actual file size.
     #[test]
-    fn test_sstable_build_and_open() {
+    fn build_and_open() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -130,8 +171,25 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------------------
+    // Empty SSTable rejected
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Attempt to build an SSTable with zero points and zero range
+    /// tombstones — the builder must reject the request.
+    ///
+    /// # Starting environment
+    /// No SSTable file on disk.
+    ///
+    /// # Actions
+    /// 1. `build_from_iterators` with empty point and range iterators.
+    ///
+    /// # Expected behavior
+    /// Returns `SSTableError::Internal` with message
+    /// `"Empty iterators cannot build SSTable"`.
     #[test]
-    fn test_sstable_try_build_empty() {
+    fn build_empty_fails() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -157,8 +215,26 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------------------
+    // Range-deletes only (no points)
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Build an SSTable that contains only range tombstones and no point
+    /// entries — the builder should succeed.
+    ///
+    /// # Starting environment
+    /// No SSTable file on disk.
+    ///
+    /// # Actions
+    /// 1. `build_from_iterators` with two range tombstones, zero points.
+    /// 2. Open and inspect properties.
+    ///
+    /// # Expected behavior
+    /// `record_count == 0`, `range_tombstones_count == 2`,
+    /// `min_key` / `max_key` are empty (no point entries to derive them from).
     #[test]
-    fn test_sstable_try_build_range_deletes_only_no_points() {
+    fn build_range_deletes_only() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -188,8 +264,25 @@ mod tests {
         assert!(sst.properties.max_key.is_empty());
     }
 
+    // ----------------------------------------------------------------
+    // Points only (no range deletes)
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Build an SSTable with only point entries — no range tombstones.
+    ///
+    /// # Starting environment
+    /// No SSTable file on disk.
+    ///
+    /// # Actions
+    /// 1. `build_from_iterators` with 3 point entries, zero range tombstones.
+    /// 2. Open and inspect properties.
+    ///
+    /// # Expected behavior
+    /// `record_count == 3`, `range_tombstones_count == 0`,
+    /// `min_key == "a"`, `max_key == "c"`.
     #[test]
-    fn test_sstable_try_build_points_only_no_range_deletes() {
+    fn build_points_only() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();

@@ -1,12 +1,21 @@
 //! Recovery / reopen tests: verify durability across close → reopen.
 //!
+//! These tests exercise the clean-shutdown recovery path: the engine is closed
+//! (which flushes frozen memtables to SSTables and checkpoints the WAL), then
+//! reopened. Every test verifies that data written before close is fully
+//! accessible after reopen. Coverage includes single puts, overwrites, point
+//! deletes, range deletes, large SSTable datasets, multiple reopen cycles,
+//! WAL-only replay, scan correctness after reopen, and overwrite chains.
+//!
 //! ## Layer coverage
 //! - All tests use `memtable_sstable` (close flushes WAL/frozen → SSTable)
-//! - `memtable_sstable__wal_replay_*`: WAL-only recovery (large buffer, no SSTable flush)
+//! - `memtable_sstable__wal_replay_*`: WAL-only recovery (large buffer —
+//!   data stays in the WAL and is replayed on reopen, never reaching SSTables)
 //!
 //! ## See also
 //! - [`tests_crash_recovery`] — drop without close() (frozen WAL replay path)
 //! - [`tests_lsn_continuity`] — LSN ordering correctness after reopen
+//! - [`tests_put_get`] — basic put/get correctness (no reopen)
 
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -19,6 +28,20 @@ mod tests {
     // Basic: put, close, reopen → data survives
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Basic durability: data written before close is readable after reopen.
+    ///
+    /// # Starting environment
+    /// Fresh engine with 4 KB buffer — no prior data.
+    ///
+    /// # Actions
+    /// 1. Put `"key1"` = `"val1"` and `"key2"` = `"val2"`.
+    /// 2. Close the engine.
+    /// 3. Reopen the engine.
+    /// 4. Get both keys.
+    ///
+    /// # Expected behavior
+    /// Both keys return their original values after reopen.
     #[test]
     fn memtable_sstable__data_survives_close_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -45,6 +68,19 @@ mod tests {
     // Overwrite survives reopen
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// The latest overwrite value survives close → reopen.
+    ///
+    /// # Starting environment
+    /// Fresh engine with 4 KB buffer.
+    ///
+    /// # Actions
+    /// 1. Put `"k"` = `"v1"`, then overwrite with `"v2"`.
+    /// 2. Close and reopen.
+    /// 3. Get `"k"`.
+    ///
+    /// # Expected behavior
+    /// Returns `Some("v2")` — only the most recent write persists.
     #[test]
     fn memtable_sstable__overwrite_survives_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -64,6 +100,19 @@ mod tests {
     // Delete survives reopen
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A point-delete tombstone survives close → reopen.
+    ///
+    /// # Starting environment
+    /// Fresh engine with 4 KB buffer.
+    ///
+    /// # Actions
+    /// 1. Put `"k"` = `"val"`, then delete `"k"`.
+    /// 2. Close and reopen.
+    /// 3. Get `"k"`.
+    ///
+    /// # Expected behavior
+    /// Returns `None` — the tombstone is persisted and still hides the key.
     #[test]
     fn memtable_sstable__delete_survives_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -83,6 +132,21 @@ mod tests {
     // Range delete survives reopen
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete tombstone survives close → reopen.
+    ///
+    /// # Starting environment
+    /// Fresh engine with 4 KB buffer.
+    ///
+    /// # Actions
+    /// 1. Put 20 keys (`key_00`..`key_19`).
+    /// 2. Range-delete `["key_05", "key_15")`.
+    /// 3. Close and reopen.
+    /// 4. Get all 20 keys.
+    ///
+    /// # Expected behavior
+    /// Keys 0–4 and 15–19 survive; keys 5–14 return `None` (range-deleted).
+    /// The range tombstone is correctly persisted.
     #[test]
     fn memtable_sstable__range_delete_survives_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -132,6 +196,20 @@ mod tests {
     // Large dataset → SSTable flush → reopen → data intact
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A large dataset (200 keys) that spans multiple SSTables survives reopen.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables (`engine_with_sstables`).
+    ///
+    /// # Actions
+    /// 1. Verify `sstables_count > 0`.
+    /// 2. Close and reopen.
+    /// 3. Get all 200 keys.
+    ///
+    /// # Expected behavior
+    /// Every key returns its correct padded value — SSTable data is fully
+    /// intact after reopen.
     #[test]
     fn memtable_sstable__sstable_data_survives_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -159,6 +237,20 @@ mod tests {
     // Multiple close-reopen cycles
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Data accumulated across 3 separate open/write/close cycles is all
+    /// available after a final reopen.
+    ///
+    /// # Starting environment
+    /// Temporary directory with no prior data.
+    ///
+    /// # Actions
+    /// 1. For each cycle 0–2: open engine, put 20 keys (`c{cycle}_{i}`), close.
+    /// 2. Reopen and get all 60 keys.
+    ///
+    /// # Expected behavior
+    /// All 60 keys (20 per cycle) are present with correct values — data
+    /// from earlier cycles is not lost by subsequent cycles.
     #[test]
     fn memtable_sstable__multiple_reopen_cycles() {
         let tmp = TempDir::new().unwrap();
@@ -193,6 +285,21 @@ mod tests {
     // WAL replay: data in active memtable (not yet flushed) is recovered
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Data that stayed only in the WAL (never flushed to SSTable) is
+    /// recovered on reopen via WAL replay.
+    ///
+    /// # Starting environment
+    /// Engine with 64 KB buffer (memtable_only_config) — no flush triggered.
+    ///
+    /// # Actions
+    /// 1. Put `"wal_key"` = `"wal_val"` (stays in WAL, not flushed).
+    /// 2. Close and reopen.
+    /// 3. Get `"wal_key"`.
+    ///
+    /// # Expected behavior
+    /// Returns `Some("wal_val")` — the WAL is replayed during open(),
+    /// reconstructing the memtable from the WAL entries.
     #[test]
     fn memtable_sstable__wal_replay_recovers_data() {
         let tmp = TempDir::new().unwrap();
@@ -217,6 +324,18 @@ mod tests {
     // Scan correctness after reopen
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Scan returns correct, sorted results after reopen.
+    ///
+    /// # Starting environment
+    /// Engine with 50 keys inserted and then closed.
+    ///
+    /// # Actions
+    /// 1. Put 50 keys, close.
+    /// 2. Reopen, scan range `["sk_", "sk_\xff")`.
+    ///
+    /// # Expected behavior
+    /// Returns all 50 keys in strictly sorted order.
     #[test]
     fn memtable_sstable__scan_works_after_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -245,6 +364,19 @@ mod tests {
     // Delete + reopen + verify tombstone is durable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Delete tombstones of SSTable keys survive close → reopen.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. Delete the first 50 keys (`dt_0000`..`dt_0049`).
+    /// 2. Close and reopen.
+    /// 3. Get all 200 keys.
+    ///
+    /// # Expected behavior
+    /// Keys 0–49: `None` (tombstones persisted). Keys 50–199: present.
     #[test]
     fn memtable_sstable__delete_tombstone_durable_after_reopen() {
         let tmp = TempDir::new().unwrap();
@@ -283,6 +415,19 @@ mod tests {
     // Multiple overwrites → reopen → latest value
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A key overwritten 5 times returns only the latest value after reopen.
+    ///
+    /// # Starting environment
+    /// Fresh engine with 4 KB buffer.
+    ///
+    /// # Actions
+    /// 1. Put `"chain"` with values `"v0"` through `"v4"` (5 overwrites).
+    /// 2. Close and reopen.
+    /// 3. Get `"chain"`.
+    ///
+    /// # Expected behavior
+    /// Returns `Some("v4")` — the most recent overwrite wins after recovery.
     #[test]
     fn memtable_sstable__overwrite_chain_survives_reopen() {
         let tmp = TempDir::new().unwrap();

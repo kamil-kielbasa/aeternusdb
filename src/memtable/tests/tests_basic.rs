@@ -1,3 +1,18 @@
+//! Memtable basic operation tests.
+//!
+//! These tests verify the core `Memtable` API — put, get, delete,
+//! overwrite, scan, `iter_for_flush()`, write-buffer overflow, and
+//! WAL-based crash recovery.
+//!
+//! The memtable is an in-memory sorted structure backed by a WAL.
+//! `get()` returns `MemtableGetResult::Put(val)`, `Delete`, or
+//! `NotFound`. These tests exercise the API directly without the engine
+//! layer.
+//!
+//! ## See also
+//! - [`tests_frozen`] — `FrozenMemtable` API correctness
+//! - [`tests_scan`] — raw multi-version scan output
+
 #[cfg(test)]
 mod tests {
     use crate::memtable::{Memtable, MemtableError, MemtableGetResult, Record};
@@ -11,8 +26,24 @@ mod tests {
             .try_init();
     }
 
+    // ----------------------------------------------------------------
+    // Put + Get
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A single put followed by a get returns the inserted value.
+    ///
+    /// # Starting environment
+    /// Fresh memtable (1 KB buffer) — empty.
+    ///
+    /// # Actions
+    /// 1. `put("key1", "value1")`.
+    /// 2. `get("key1")`.
+    ///
+    /// # Expected behavior
+    /// Returns `MemtableGetResult::Put("value1")`.
     #[test]
-    fn test_put_and_get() {
+    fn put_and_get() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -25,8 +56,25 @@ mod tests {
         assert_eq!(value, MemtableGetResult::Put(b"value1".to_vec()));
     }
 
+    // ----------------------------------------------------------------
+    // Delete
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Deleting an existing key makes `get()` return `Delete`.
+    ///
+    /// # Starting environment
+    /// Fresh memtable — empty.
+    ///
+    /// # Actions
+    /// 1. `put("key1", "value1")`.
+    /// 2. `delete("key1")`.
+    /// 3. `get("key1")`.
+    ///
+    /// # Expected behavior
+    /// Returns `MemtableGetResult::Delete` (tombstone present, not `NotFound`).
     #[test]
-    fn test_delete_key() {
+    fn delete_key() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -40,8 +88,32 @@ mod tests {
         assert_eq!(value, MemtableGetResult::Delete);
     }
 
+    // ----------------------------------------------------------------
+    // iter_for_flush — produces all record types
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// `iter_for_flush()` yields every record in the memtable —
+    /// puts, point deletes, and range deletes — suitable for SSTable
+    /// building. The memtable state is unchanged after iteration.
+    ///
+    /// # Starting environment
+    /// Fresh memtable — empty.
+    ///
+    /// # Actions
+    /// 1. Put keys 1, 2, 3, 8 + 4.
+    /// 2. Delete keys 2, 9, 10.
+    /// 3. Range-delete `[key5, key7)`, `[key11, key13)`, `[key15, key17)`.
+    /// 4. Call `iter_for_flush()` and collect.
+    /// 5. Verify memtable state is unchanged via `get()`.
+    ///
+    /// # Expected behavior
+    /// - 10 records total: 4 surviving puts + 3 deletes + 3 range deletes.
+    ///   (key2 was put then deleted → only the delete survives as the
+    ///    latest version.)
+    /// - Memtable contents are still readable after flush iteration.
     #[test]
-    fn test_iter_for_flush() {
+    fn iter_for_flush() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -160,8 +232,25 @@ mod tests {
         assert_eq!(memtable.get(b"key10").unwrap(), MemtableGetResult::Delete);
     }
 
+    // ----------------------------------------------------------------
+    // Scan — basic range
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// `scan(start, end)` returns records in `[start, end)` with correct
+    /// keys, values, LSNs, and non-zero timestamps.
+    ///
+    /// # Starting environment
+    /// Fresh memtable with 3 keys: `a`, `b`, `c`.
+    ///
+    /// # Actions
+    /// 1. `scan("a", "c")` — start-inclusive, end-exclusive.
+    ///
+    /// # Expected behavior
+    /// Returns 2 records for `a` and `b` (not `c`), each with correct
+    /// LSN (1, 2) and `timestamp > 0`.
     #[test]
-    fn test_scan_range() {
+    fn scan_range() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -207,8 +296,25 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Overwrite — latest value wins
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Overwriting a key makes `get()` return the latest value.
+    ///
+    /// # Starting environment
+    /// Fresh memtable — empty.
+    ///
+    /// # Actions
+    /// 1. `put("a", "1")`.
+    /// 2. `put("a", "2")`.
+    /// 3. `get("a")`.
+    ///
+    /// # Expected behavior
+    /// Returns `Put("2")` — the latest version.
     #[test]
-    fn test_multiple_versions() {
+    fn multiple_versions() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -222,8 +328,24 @@ mod tests {
         assert_eq!(value, MemtableGetResult::Put(b"2".to_vec()));
     }
 
+    // ----------------------------------------------------------------
+    // Write-buffer overflow → FlushRequired
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Writing beyond the configured buffer size triggers
+    /// `MemtableError::FlushRequired`.
+    ///
+    /// # Starting environment
+    /// Fresh memtable with a tiny 16-byte write buffer.
+    ///
+    /// # Actions
+    /// 1. `put("a", "1234567890")` — exceeds the 16-byte budget.
+    ///
+    /// # Expected behavior
+    /// Returns `Err(MemtableError::FlushRequired)`.
     #[test]
-    fn test_write_buffer_limit() {
+    fn write_buffer_limit() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -234,8 +356,26 @@ mod tests {
         assert!(matches!(res, Err(MemtableError::FlushRequired)));
     }
 
+    // ----------------------------------------------------------------
+    // WAL recovery — basic
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Dropping a memtable (without explicit close) and reopening it
+    /// recovers the data from the WAL.
+    ///
+    /// # Starting environment
+    /// Fresh memtable with one put.
+    ///
+    /// # Actions
+    /// 1. `put("x", "y")`, drop memtable.
+    /// 2. Reopen memtable from the same WAL path.
+    /// 3. `get("x")`.
+    ///
+    /// # Expected behavior
+    /// Returns `Put("y")` — data was recovered from the WAL.
     #[test]
-    fn test_wal_recovery() {
+    fn wal_recovery() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -251,8 +391,29 @@ mod tests {
         assert_eq!(value, MemtableGetResult::Put(b"y".to_vec()));
     }
 
+    // ----------------------------------------------------------------
+    // WAL recovery — LSN continuity
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// After WAL recovery the LSN counter resumes from where it left off,
+    /// preventing LSN gaps or reuse.
+    ///
+    /// # Starting environment
+    /// Memtable with two puts (`alpha`, `beta`).
+    ///
+    /// # Actions
+    /// 1. `put("alpha", "value1")`, `put("beta", "value2")` → `max_lsn = 2`.
+    /// 2. Drop memtable.
+    /// 3. Reopen from same WAL → verify `max_lsn` is still 2.
+    /// 4. Verify data is intact.
+    /// 5. `put("gamma", "value3")` → verify `max_lsn = 3`.
+    ///
+    /// # Expected behavior
+    /// LSN is restored to the pre-crash value; new writes continue
+    /// from `max_lsn + 1`.
     #[test]
-    fn test_memtable_recovery_from_wal_with_lsn() {
+    fn recovery_from_wal_preserves_lsn() {
         let tmp_dir = TempDir::new().unwrap();
         let wal_path = tmp_dir.path().join("wal-000001.log");
 
@@ -287,8 +448,26 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------------------
+    // Empty memtable — get and scan
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Operations on an empty memtable return appropriate "not found"
+    /// results.
+    ///
+    /// # Starting environment
+    /// Fresh memtable — no writes.
+    ///
+    /// # Actions
+    /// 1. `get("nonexistent")`.
+    /// 2. `scan("a", "z")`.
+    ///
+    /// # Expected behavior
+    /// - `get` returns `MemtableGetResult::NotFound`.
+    /// - `scan` yields 0 records.
     #[test]
-    fn test_empty_get_and_scan() {
+    fn empty_get_and_scan() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();

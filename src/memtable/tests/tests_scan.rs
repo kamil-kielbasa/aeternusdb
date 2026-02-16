@@ -1,10 +1,49 @@
+//! Memtable raw scan output tests.
+//!
+//! Unlike the engine's `scan()` (which resolves tombstones and deduplicates),
+//! the memtable's `scan()` returns **all versions** of every key in the
+//! requested range — puts, point-deletes, and range-deletes — ordered by
+//! `(key ASC, lsn DESC)`.  This raw output is the input to the engine's
+//! visibility filter and to `iter_for_flush()` / SSTable building.
+//!
+//! Coverage:
+//! - Full-range scan with verified LSNs and timestamps
+//! - Partial-range scan
+//! - Scan with point-deletes (both put and delete versions emitted)
+//! - Empty memtable scan
+//! - Scan with no matching keys
+//! - Scan with range tombstones (tombstone + covered puts emitted)
+//! - Mixed operations: range-deletes, point-deletes, overwrites, and
+//!   re-insertions — full raw output verified
+//!
+//! ## See also
+//! - [`tests_basic`] — active `Memtable` API tests
+//! - [`tests_frozen`] — `FrozenMemtable` API correctness
+
 #[cfg(test)]
-mod scan_tests {
+mod tests {
     use crate::memtable::{Memtable, Record};
     use tempfile::TempDir;
 
+    // ----------------------------------------------------------------
+    // Full-range scan
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan the entire key space and verify every record has the correct
+    /// key, value, LSN, and a non-zero timestamp.
+    ///
+    /// # Starting environment
+    /// Fresh memtable with 10 keys (`key0`–`key9`).
+    ///
+    /// # Actions
+    /// 1. `scan("key0", "key9\xff")` — covers all 10 keys.
+    ///
+    /// # Expected behavior
+    /// 10 `Put` records in ascending key order, LSNs 1–10,
+    /// `timestamp > 0` on each.
     #[test]
-    fn test_scan_full_range() {
+    fn scan_full_range() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -38,8 +77,23 @@ mod scan_tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Partial-range scan
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A partial scan returns only keys in `[start, end)`.
+    ///
+    /// # Starting environment
+    /// 10 keys (`key0`–`key9`) in the memtable.
+    ///
+    /// # Actions
+    /// 1. `scan("key3", "key7")`.
+    ///
+    /// # Expected behavior
+    /// 4 records for `key3`–`key6` with correct LSNs (4–7).
     #[test]
-    fn test_scan_partial_range() {
+    fn scan_partial_range() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -73,8 +127,27 @@ mod scan_tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Scan with point deletes
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// After deleting some keys, scan emits both the `Delete` tombstone
+    /// and the older `Put` for each deleted key (raw multi-version output).
+    ///
+    /// # Starting environment
+    /// 5 keys (`key0`–`key4`), then `key1` and `key3` deleted.
+    ///
+    /// # Actions
+    /// 1. `scan("key0", "key4\xff")`.
+    ///
+    /// # Expected behavior
+    /// 7 records total:
+    /// `Put(key0)`, `Delete(key1)`, `Put(key1)`, `Put(key2)`,
+    /// `Delete(key3)`, `Put(key3)`, `Put(key4)`.
+    /// Deletes have higher LSNs than the corresponding puts.
     #[test]
-    fn test_scan_with_deletions() {
+    fn scan_with_deletions() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -148,7 +221,7 @@ mod scan_tests {
                         key: ek,
                         value: ev,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -165,7 +238,7 @@ mod scan_tests {
                     Record::Delete {
                         key: ek,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -177,8 +250,23 @@ mod scan_tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Empty memtable scan
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan on an empty memtable yields zero records.
+    ///
+    /// # Starting environment
+    /// Fresh memtable — no writes.
+    ///
+    /// # Actions
+    /// 1. `scan("key0", "key9")`.
+    ///
+    /// # Expected behavior
+    /// Empty result set.
     #[test]
-    fn test_scan_empty_memtable() {
+    fn scan_empty_memtable() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -187,8 +275,23 @@ mod scan_tests {
         assert!(results.is_empty());
     }
 
+    // ----------------------------------------------------------------
+    // Scan when no keys match the range
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan with bounds that don't overlap any existing key.
+    ///
+    /// # Starting environment
+    /// 5 keys (`key000`–`key004`).
+    ///
+    /// # Actions
+    /// 1. `scan("key100", "key200")` — no overlap.
+    ///
+    /// # Expected behavior
+    /// Empty result set.
     #[test]
-    fn test_scan_no_matching_keys() {
+    fn scan_no_matching_keys() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -203,8 +306,27 @@ mod scan_tests {
         assert!(results.is_empty());
     }
 
+    // ----------------------------------------------------------------
+    // Scan with range tombstones
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// After a `delete_range`, the scan emits the `RangeDelete` tombstone
+    /// **and** the covered `Put` records (all raw versions).
+    ///
+    /// # Starting environment
+    /// 5 keys (`key0`–`key4`), then `delete_range("key3", "key5")`.
+    ///
+    /// # Actions
+    /// 1. `scan("key0", "key5\xff")`.
+    ///
+    /// # Expected behavior
+    /// 6 records: `Put(key0)`, `Put(key1)`, `Put(key2)`,
+    /// `RangeDelete(key3..key5)`, `Put(key3)`, `Put(key4)`.
+    /// The range tombstone appears before the covered puts (higher LSN,
+    /// same start key).
     #[test]
-    fn test_scan_with_range_tombstones() {
+    fn scan_with_range_tombstones() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -277,7 +399,7 @@ mod scan_tests {
                         key: ek,
                         value: ev,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -296,7 +418,7 @@ mod scan_tests {
                         start: ek,
                         end: eks,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -309,8 +431,31 @@ mod scan_tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Scan with mixed operations
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A complex sequence of puts, range-deletes, re-inserts, and
+    /// point-deletes. The raw scan must emit every version for each key.
+    ///
+    /// # Starting environment
+    /// 10 keys (`key0`–`key9`).
+    ///
+    /// # Actions
+    /// 1. `delete_range("key2", "key6")`.
+    /// 2. Re-insert `key3` and `key4` with new values.
+    /// 3. `delete_range("key7", "key10")`.
+    /// 4. Re-insert `key8` with new value.
+    /// 5. Point-delete `key0` and `key1`.
+    /// 6. `scan("key0", "key9\xff")`.
+    ///
+    /// # Expected behavior
+    /// 17 records covering all raw versions in `(key ASC, lsn DESC)`
+    /// order, including both old and new values for overwritten keys
+    /// and both point-delete tombstones and their original puts.
     #[test]
-    fn test_scan_with_mixed_operations() {
+    fn scan_with_mixed_operations() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
@@ -469,7 +614,7 @@ mod scan_tests {
                         key: ek,
                         value: ev,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -486,7 +631,7 @@ mod scan_tests {
                     Record::Delete {
                         key: ek,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -504,7 +649,7 @@ mod scan_tests {
                         start: ek,
                         end: eks,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);

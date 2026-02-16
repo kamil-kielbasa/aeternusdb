@@ -1,12 +1,22 @@
 //! Edge-case tests: empty keys/values, scan boundaries, stats correctness,
 //! close semantics, large/binary keys, and misc corner cases.
 //!
+//! This module exercises non-happy-path scenarios that a production database must
+//! handle gracefully. It covers input validation (empty keys/values are rejected),
+//! scan boundary semantics (start-inclusive / end-exclusive, inverted ranges),
+//! stats counter transitions during freeze/flush, engine behavior after `close()`,
+//! recovery of very large and binary keys through SSTables, and operations on
+//! an empty database. These tests ensure the engine is robust against unusual
+//! but valid (or intentionally invalid) usage patterns.
+//!
 //! ## Layer coverage
-//! - `memtable__*`: memtable-only edge cases (validation, boundaries)
-//! - `memtable_sstable__*`: edge cases involving SSTable flush and recovery
+//! - `memtable__*`: memtable-only edge cases (validation, boundaries, empty DB)
+//! - `memtable_sstable__*`: edge cases involving SSTable flush, recovery, and
+//!   engine lifecycle (close, reopen, stats)
 //!
 //! ## See also
 //! - [`tests_hardening`] — concurrency, extreme configs, orphan cleanup
+//! - [`tests_scan`] — standard scan correctness tests
 
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -19,6 +29,17 @@ mod tests {
     // Empty key / empty value
     // ================================================================
 
+    /// # Scenario
+    /// Attempt to insert a key with an empty byte vector.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Call `put(vec![], b"value")` with an empty key.
+    ///
+    /// # Expected behavior
+    /// The engine returns an error — empty keys are rejected at the API level.
     #[test]
     fn memtable__empty_key_is_rejected() {
         let dir = TempDir::new().unwrap();
@@ -28,6 +49,17 @@ mod tests {
         assert!(result.is_err(), "empty key should be rejected");
     }
 
+    /// # Scenario
+    /// Attempt to insert a value with an empty byte vector.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Call `put(b"key", vec![])` with an empty value.
+    ///
+    /// # Expected behavior
+    /// The engine returns an error — empty values are rejected at the API level.
     #[test]
     fn memtable__empty_value_is_rejected() {
         let dir = TempDir::new().unwrap();
@@ -37,6 +69,17 @@ mod tests {
         assert!(result.is_err(), "empty value should be rejected");
     }
 
+    /// # Scenario
+    /// Attempt to insert both an empty key and an empty value.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Call `put(vec![], vec![])` with both key and value empty.
+    ///
+    /// # Expected behavior
+    /// The engine returns an error — at least the empty key triggers rejection.
     #[test]
     fn memtable__empty_key_and_value_rejected() {
         let dir = TempDir::new().unwrap();
@@ -50,6 +93,18 @@ mod tests {
     // Scan boundary edge cases
     // ================================================================
 
+    /// # Scenario
+    /// Scan where start key equals end key (zero-width range).
+    ///
+    /// # Starting environment
+    /// Engine with one key `"aaa"` inserted.
+    ///
+    /// # Actions
+    /// 1. Scan with `start = "aaa"` and `end = "aaa"`.
+    ///
+    /// # Expected behavior
+    /// Returns an empty result — a zero-width range `[x, x)` contains no keys
+    /// because the end key is exclusive.
     #[test]
     fn memtable__scan_start_equals_end_empty() {
         let dir = TempDir::new().unwrap();
@@ -60,6 +115,18 @@ mod tests {
         assert!(results.is_empty(), "scan(x, x) should return nothing");
     }
 
+    /// # Scenario
+    /// Scan where start key is greater than end key (inverted range).
+    ///
+    /// # Starting environment
+    /// Engine with two keys `"aaa"` and `"zzz"`.
+    ///
+    /// # Actions
+    /// 1. Scan with `start = "zzz"` and `end = "aaa"` (start > end).
+    ///
+    /// # Expected behavior
+    /// Returns an empty result and does not panic — inverted ranges are
+    /// treated as empty.
     #[test]
     fn memtable__scan_start_gt_end_empty() {
         let dir = TempDir::new().unwrap();
@@ -74,6 +141,18 @@ mod tests {
         );
     }
 
+    /// # Scenario
+    /// Verify the exact boundary semantics of scan: start-inclusive, end-exclusive.
+    ///
+    /// # Starting environment
+    /// Engine with 10 two-byte keys `[b'k', 0]` through `[b'k', 9]`.
+    ///
+    /// # Actions
+    /// 1. Scan with `start = [k, 3]` and `end = [k, 7]`.
+    ///
+    /// # Expected behavior
+    /// Result includes keys `[k,3]`, `[k,4]`, `[k,5]`, `[k,6]` but NOT `[k,7]`
+    /// (end is exclusive) and NOT `[k,2]` (before start).
     #[test]
     fn memtable__scan_exact_boundary_inclusivity() {
         // Verify: start key is INCLUSIVE, end key is EXCLUSIVE.
@@ -101,6 +180,17 @@ mod tests {
         );
     }
 
+    /// # Scenario
+    /// Full-keyspace scan using the widest possible byte range.
+    ///
+    /// # Starting environment
+    /// Engine with 20 keys (`key_0000`..`key_0019`).
+    ///
+    /// # Actions
+    /// 1. Scan with `start = "\x00"` and `end = "\xff"`.
+    ///
+    /// # Expected behavior
+    /// All 20 keys are returned — the scan range covers the entire keyspace.
     #[test]
     fn memtable__scan_full_keyspace() {
         let dir = TempDir::new().unwrap();
@@ -126,6 +216,22 @@ mod tests {
     // Stats correctness
     // ================================================================
 
+    /// # Scenario
+    /// Track the `frozen_count` and `sstables_count` stat counters as
+    /// writes transition data through the freeze/flush lifecycle.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer config (128 bytes) — no data yet.
+    /// Initial stats: frozen_count = 0, sstables_count = 0.
+    ///
+    /// # Actions
+    /// 1. Write keys in a loop until `frozen_count > 0` (a memtable was frozen).
+    /// 2. Write one more key (`"trigger"`) to flush the frozen memtable.
+    /// 3. Check stats again.
+    ///
+    /// # Expected behavior
+    /// After the trigger put, `sstables_count > 0` — the frozen memtable has
+    /// been flushed to an SSTable.
     #[test]
     fn memtable_sstable__stats_frozen_count_transitions() {
         let dir = TempDir::new().unwrap();
@@ -170,6 +276,21 @@ mod tests {
     // Close semantics
     // ================================================================
 
+    /// # Scenario
+    /// Verify that the engine remains usable after `close()` is called.
+    ///
+    /// # Starting environment
+    /// Engine with 4 KB buffer; one key `"k"` = `"v"` inserted.
+    ///
+    /// # Actions
+    /// 1. Call `close()` (flushes frozen memtables and checkpoints).
+    /// 2. Perform a `get("k")` after close.
+    /// 3. Perform a `put("k2", "v2")` and `get("k2")` after close.
+    /// 4. Perform a scan after close.
+    ///
+    /// # Expected behavior
+    /// All operations succeed — `close()` checkpoints state but the engine
+    /// struct remains usable for subsequent reads and writes.
     #[test]
     fn memtable_sstable__operations_after_close_work() {
         // close() flushes frozen and checkpoints, but the engine struct
@@ -202,6 +323,19 @@ mod tests {
         );
     }
 
+    /// # Scenario
+    /// Calling `close()` multiple times in a row does not panic or corrupt data.
+    ///
+    /// # Starting environment
+    /// Engine with one key inserted.
+    ///
+    /// # Actions
+    /// 1. Call `close()` (first close — flushes and checkpoints).
+    /// 2. Call `close()` again (second close — should be a no-op).
+    /// 3. Reopen the engine and get the key.
+    ///
+    /// # Expected behavior
+    /// No error or panic on the second close, and the data is intact after reopen.
     #[test]
     fn memtable_sstable__multiple_close_calls_safe() {
         let dir = TempDir::new().unwrap();
@@ -215,6 +349,20 @@ mod tests {
         assert_eq!(engine.get(b"k".to_vec()).unwrap(), Some(b"v".to_vec()),);
     }
 
+    /// # Scenario
+    /// Open → write → close → reopen → close (no writes) → reopen → verify.
+    ///
+    /// # Starting environment
+    /// Temporary directory with no prior database files.
+    ///
+    /// # Actions
+    /// 1. Open engine, put `"k"` = `"v"`, close.
+    /// 2. Reopen engine, close immediately (no new writes).
+    /// 3. Reopen engine, get `"k"`.
+    ///
+    /// # Expected behavior
+    /// `get("k")` returns `Some("v")` — a close-with-no-writes cycle must not
+    /// lose previously persisted data.
     #[test]
     fn memtable_sstable__close_no_writes_reopen() {
         // open → write → close → reopen → close (no writes) → reopen
@@ -239,6 +387,19 @@ mod tests {
     // Reopen after only deletes
     // ================================================================
 
+    /// # Scenario
+    /// A session that performs only deletes (no puts) followed by a reopen.
+    ///
+    /// # Starting environment
+    /// Session 1: three keys `"a"`, `"b"`, `"c"` inserted and engine closed.
+    ///
+    /// # Actions
+    /// 1. Session 2: reopen, delete `"b"` (point), range-delete `["c", "d")`, close.
+    /// 2. Session 3: reopen, get `"a"`, `"b"`, `"c"`.
+    ///
+    /// # Expected behavior
+    /// `"a"` survives, `"b"` is `None` (point-deleted), `"c"` is `None`
+    /// (range-deleted). Delete-only sessions are correctly persisted.
     #[test]
     fn memtable_sstable__reopen_after_only_deletes() {
         let dir = TempDir::new().unwrap();
@@ -275,6 +436,24 @@ mod tests {
     // Very large keys
     // ================================================================
 
+    /// # Scenario
+    /// Store and recover an 8 KB key through SSTable flush and engine reopen.
+    ///
+    /// # Starting environment
+    /// Engine with 16 KB write buffer (custom config so the 8 KB key fits in
+    /// one memtable).
+    ///
+    /// # Actions
+    /// 1. Put an 8192-byte key (`0xAB` repeated) with a small value.
+    /// 2. Write 600 padding keys to exceed the 16 KB buffer and force SSTable
+    ///    flush.
+    /// 3. Verify the large key is readable before close.
+    /// 4. Close and reopen the engine.
+    /// 5. Get the large key again.
+    ///
+    /// # Expected behavior
+    /// The 8 KB key is correctly stored in the SSTable and survives reopen —
+    /// the engine handles very large keys without truncation or corruption.
     #[test]
     fn memtable_sstable__very_large_key_recovery() {
         let dir = TempDir::new().unwrap();
@@ -328,6 +507,24 @@ mod tests {
     // Binary keys (0x00/0xFF) through SSTable and recovery
     // ================================================================
 
+    /// # Scenario
+    /// Store and recover keys composed entirely of `0x00`, `0xFF`, and mixed
+    /// binary bytes through SSTable flush and reopen.
+    ///
+    /// # Starting environment
+    /// Engine with 4 KB buffer.
+    ///
+    /// # Actions
+    /// 1. Put three binary keys: 32×`0x00`, 32×`0xFF`, and a mixed
+    ///    `[0x00, 0xFF, 0x00, 0xFF, 0x01, 0xFE]` sequence.
+    /// 2. Write 200 padding keys to force SSTable flush.
+    /// 3. Verify all three keys before close.
+    /// 4. Close and reopen the engine.
+    /// 5. Get all three binary keys.
+    ///
+    /// # Expected behavior
+    /// All binary keys are correctly stored, flushed to SSTable, and recovered
+    /// after reopen — the engine correctly handles boundary byte values.
     #[test]
     fn memtable_sstable__binary_keys_recovery() {
         let dir = TempDir::new().unwrap();
@@ -391,6 +588,19 @@ mod tests {
     // Range-delete / delete on empty database
     // ================================================================
 
+    /// # Scenario
+    /// Issue a range delete on a completely empty database.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data whatsoever.
+    ///
+    /// # Actions
+    /// 1. Call `delete_range("start", "end")` on the empty engine.
+    /// 2. Get `"anything"` and scan the full keyspace.
+    ///
+    /// # Expected behavior
+    /// No error or panic; get returns `None` and scan returns empty.
+    /// Range-deleting on an empty database is a safe no-op.
     #[test]
     fn memtable__range_delete_on_empty_db() {
         let dir = TempDir::new().unwrap();
@@ -411,6 +621,18 @@ mod tests {
         assert!(results.is_empty(), "empty DB scan should return nothing");
     }
 
+    /// # Scenario
+    /// Issue a point delete on a completely empty database.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Delete `"nonexistent"` (never inserted).
+    /// 2. Get `"nonexistent"`.
+    ///
+    /// # Expected behavior
+    /// No error; get returns `None`. Point-deleting on an empty database is safe.
     #[test]
     fn memtable__delete_on_empty_db() {
         let dir = TempDir::new().unwrap();
@@ -424,6 +646,19 @@ mod tests {
     // Scan where all keys in range are deleted
     // ================================================================
 
+    /// # Scenario
+    /// Scan a range where every key has been deleted via range-delete.
+    ///
+    /// # Starting environment
+    /// Engine with 10 keys (`key_0000`..`key_0009`) inserted.
+    ///
+    /// # Actions
+    /// 1. Range-delete `["key_0000", "key_9999")` — covers all 10 keys.
+    /// 2. Scan `["key_", "key_\xff")`.
+    ///
+    /// # Expected behavior
+    /// Scan returns an empty result — all keys in the scan range have been
+    /// range-deleted, and tombstones correctly suppress them.
     #[test]
     fn memtable__scan_all_keys_deleted() {
         let dir = TempDir::new().unwrap();

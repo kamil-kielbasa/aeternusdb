@@ -1,11 +1,24 @@
 //! Precedence tests: range vs point delete/put, LSN ordering.
 //!
+//! These tests verify the core LSN-based precedence rules that govern the
+//! interaction between different operation types within a single session
+//! (no reopen). The rules tested:
+//! 1. A newer range-delete tombstone hides an older point put.
+//! 2. A newer put overrides an older range-delete.
+//! 3. A point-delete outside a range-delete interval works independently.
+//! 4. A put inside a range-deleted interval resurrects the key.
+//! 5. Multiple interleaved range-deletes and puts are resolved correctly
+//!    by LSN ordering.
+//! 6. A point-delete after a put (which itself was after a range-delete)
+//!    resolves to `None`.
+//!
 //! ## Layer coverage
-//! - All tests use `memtable` only (64 KB buffer, no flushes)
+//! - All tests use `memtable` only (64 KB buffer — no flushes)
 //!
 //! ## See also
 //! - [`tests_layers`] — same precedence rules across memtable ↔ SSTable layers
 //! - [`tests_lsn_continuity`] — precedence across reopen cycles
+//! - [`tests_range_delete`] — range-delete boundary and overlap correctness
 
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -18,6 +31,19 @@ mod tests {
     // Newer range tombstone beats older point put
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete issued after a put hides the put.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put `"key_05"` = `"v"` (lower LSN).
+    /// 2. Range-delete `["key_00", "key_10")` (higher LSN).
+    /// 3. Get `"key_05"`.
+    ///
+    /// # Expected behavior
+    /// Returns `None` — the range tombstone (higher LSN) shadows the put.
     #[test]
     fn memtable__newer_range_delete_beats_older_put() {
         let tmp = TempDir::new().unwrap();
@@ -38,6 +64,20 @@ mod tests {
     // Newer point put beats older range tombstone
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A put issued after a range-delete overrides the tombstone.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put `"key_05"` = `"old"` (initial put).
+    /// 2. Range-delete `["key_00", "key_10")` (middle LSN) → verify `None`.
+    /// 3. Put `"key_05"` = `"new"` (highest LSN).
+    /// 4. Get `"key_05"`.
+    ///
+    /// # Expected behavior
+    /// Returns `Some("new")` — the latest put overrides the range tombstone.
     #[test]
     fn memtable__newer_put_beats_older_range_delete() {
         let tmp = TempDir::new().unwrap();
@@ -65,6 +105,24 @@ mod tests {
     // Point delete inside an existing range
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A point-delete for a key outside a range-delete interval works
+    /// independently.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put 20 keys.
+    /// 2. Range-delete `["key_05", "key_15")`.
+    /// 3. Point-delete `"key_03"` (outside the range).
+    /// 4. Get representative keys.
+    ///
+    /// # Expected behavior
+    /// - `key_03`: `None` (point-deleted).
+    /// - `key_10`: `None` (range-deleted).
+    /// - `key_02`: present (not affected).
+    /// - `key_15`: present (end-exclusive).
     #[test]
     fn memtable__point_delete_inside_range() {
         let tmp = TempDir::new().unwrap();
@@ -102,6 +160,22 @@ mod tests {
     // Put inside range after delete — resurrects the key
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A put issued after a range-delete resurrects a key inside the
+    /// deleted interval.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put 10 keys.
+    /// 2. Range-delete `["key_03", "key_08")` — keys 3–7 deleted.
+    /// 3. Re-insert `"key_05"` = `"resurrected"`.
+    /// 4. Get `"key_05"` and `"key_04"`.
+    ///
+    /// # Expected behavior
+    /// - `key_05`: `Some("resurrected")` (newer LSN than range tombstone).
+    /// - `key_04`: `None` (still range-deleted).
     #[test]
     fn memtable__put_inside_range_after_delete() {
         let tmp = TempDir::new().unwrap();
@@ -138,6 +212,24 @@ mod tests {
     // Multiple range deletes with interleaved puts
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Multiple range-deletes with interleaved puts: the final state is
+    /// determined by LSN ordering of each operation.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put keys `a`–`e`.
+    /// 2. Range-delete `[b, d)` → kills `b`, `c`.
+    /// 3. Re-insert `c` = `"revived"`.
+    /// 4. Range-delete `[c, e)` → kills `c` (again) and `d`.
+    /// 5. Re-insert `d` = `"final"`.
+    /// 6. Get `a`, `b`, `c`, `d`, `e`.
+    ///
+    /// # Expected behavior
+    /// - `a`: `"1"` (untouched), `b`: `None`, `c`: `None`,
+    ///   `d`: `"final"` (re-inserted), `e`: `"5"` (untouched).
     #[test]
     fn memtable__interleaved_ranges_and_puts() {
         let tmp = TempDir::new().unwrap();
@@ -174,6 +266,23 @@ mod tests {
     // (range has lower LSN, but point delete has higher LSN)
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Point-delete issued after a chain of range-delete → put overrides
+    /// the put.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config — no data.
+    ///
+    /// # Actions
+    /// 1. Put `"x"` = `"v1"`.
+    /// 2. Range-delete `["w", "z")`.
+    /// 3. Put `"x"` = `"v2"` (resurrects) → verify `Some("v2")`.
+    /// 4. Point-delete `"x"` (highest LSN).
+    /// 5. Get `"x"`.
+    ///
+    /// # Expected behavior
+    /// Returns `None` — the final point-delete has the highest LSN and
+    /// wins over all preceding operations.
     #[test]
     fn memtable__point_delete_after_range_and_put() {
         let tmp = TempDir::new().unwrap();

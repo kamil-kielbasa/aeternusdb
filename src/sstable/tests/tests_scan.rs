@@ -1,3 +1,24 @@
+//! SSTable raw scan output tests.
+//!
+//! `SSTable::scan(start, end)` returns **all records** — puts,
+//! point-deletes, and range-deletes — in `(key ASC, lsn DESC)` order
+//! without resolving visibility.  This raw stream is consumed by the
+//! engine's merge iterator and visibility filter.
+//!
+//! Coverage:
+//! - Points only — correct key/value/lsn/timestamp
+//! - Points + point-deletes interleaved
+//! - Range-delete only (no point entries)
+//! - Points + range-delete covering a sub-range
+//! - Mixed: multiple versions, point-deletes, range-deletes
+//! - Range-delete whose start is after scan-end (excluded)
+//! - Range-delete whose end is before scan-start (excluded)
+//! - Mid-range scan (partial key space)
+//!
+//! ## See also
+//! - [`tests_basic`] — SSTable build / open / structural validation
+//! - [`tests_get`]   — intra-SSTable `get()` with LSN resolution
+
 #[cfg(test)]
 mod tests {
     use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, Record, SSTable};
@@ -38,8 +59,24 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Points only
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan an SSTable that contains only put entries — no deletes.
+    ///
+    /// # Starting environment
+    /// SSTable with 3 puts: `("a","1")`, `("b","2")`, `("c","3")`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"a", b"z")`.
+    ///
+    /// # Expected behavior
+    /// 3 `Put` records in ascending key order with correct
+    /// key / value / lsn / timestamp.
     #[test]
-    fn test_scan_only_points() {
+    fn scan_only_points() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -113,14 +150,29 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Points + point-deletes
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan an SSTable containing a mix of puts and a point-delete.
+    ///
+    /// # Starting environment
+    /// SSTable with `put(a)`, `del(b)`, `put(c)`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"a", b"z")`.
+    ///
+    /// # Expected behavior
+    /// 3 records in key order: `Put(a)`, `Delete(b)`, `Put(c)`.
     #[test]
-    fn test_scan_point_deletes() {
+    fn scan_point_deletes() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("scan_point_deletes.sst");
 
-        let mut points = vec![
+        let points = vec![
             point(b"a", b"1", 1, 10),
             del(b"b", 2, 11),
             point(b"c", b"3", 3, 12),
@@ -186,8 +238,23 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Range-delete only
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan an SSTable that has only a range tombstone and no points.
+    ///
+    /// # Starting environment
+    /// SSTable with `range_delete("a".."z", lsn=50)`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"a", b"z")`.
+    ///
+    /// # Expected behavior
+    /// 1 `RangeDelete` record.
     #[test]
-    fn test_scan_only_range_delete() {
+    fn scan_only_range_delete() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -226,8 +293,25 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Points + range-delete covering a sub-range
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A range-delete covers keys `b..d` while puts exist for `a`–`d`.
+    /// The raw scan includes both the tombstone and the covered puts.
+    ///
+    /// # Starting environment
+    /// SSTable with 4 puts (`a`–`d`) and `range_delete("b".."d", lsn=5)`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"a", b"z")`.
+    ///
+    /// # Expected behavior
+    /// 5 records: `Put(a)`, `RangeDelete(b..d)`, `Put(b)`, `Put(c)`,
+    /// `Put(d)` — the range tombstone appears before the covered puts.
     #[test]
-    fn test_scan_range_delete() {
+    fn scan_range_delete() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -334,8 +418,29 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Mixed: versions, point-deletes, range-deletes
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A complex SSTable with multiple versions of key `a`, point-deletes,
+    /// and two range-deletes. The raw scan must emit every record in the
+    /// correct `(key ASC, lsn DESC)` order.
+    ///
+    /// # Starting environment
+    /// SSTable built from pre-sorted points: 4 versions of `a` (including
+    /// a point-delete), `b`, `c` (+ delete), `d`, `e`; two range-deletes
+    /// `b..f` and `d..z`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"a", b"z")`.
+    ///
+    /// # Expected behavior
+    /// 11 records: all versions of `a` in lsn-desc order, then
+    /// `RangeDelete(b..f)`, `Put(b)`, `Delete(c)`, `Put(c)`,
+    /// `RangeDelete(d..z)`, `Put(d)`, `Put(e)`.
     #[test]
-    fn test_scan_mixed() {
+    fn scan_mixed() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -535,8 +640,24 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Range-delete after scan-end (excluded)
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A range tombstone whose start key is beyond the scan's end bound
+    /// should not appear in the results.
+    ///
+    /// # Starting environment
+    /// SSTable with 2 puts (`a`, `b`) and `range_delete("z".."zz")`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"a", b"d")` — end bound is before the tombstone.
+    ///
+    /// # Expected behavior
+    /// 2 `Put` records only; the range tombstone is excluded.
     #[test]
-    fn test_scan_range_delete_after_end() {
+    fn scan_range_delete_after_end() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -590,8 +711,24 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Range-delete before scan-start (excluded)
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// A range tombstone whose end key is before the scan's start bound
+    /// should not appear in the results.
+    ///
+    /// # Starting environment
+    /// SSTable with 2 puts (`d`, `e`) and `range_delete("a".."c")`.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"d", b"z")` — start bound is after the tombstone.
+    ///
+    /// # Expected behavior
+    /// 2 `Put` records only; the range tombstone is excluded.
     #[test]
-    fn test_scan_range_delete_before_start() {
+    fn scan_range_delete_before_start() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
@@ -645,8 +782,23 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Mid-range scan (partial key space)
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// Scan a subset of keys from the middle of the key space.
+    ///
+    /// # Starting environment
+    /// SSTable with 5 puts (`a`–`e`), no tombstones.
+    ///
+    /// # Actions
+    /// 1. `sst.scan(b"c", b"e")` — half-open range `[c, e)`.
+    ///
+    /// # Expected behavior
+    /// 2 records: `Put(c)` and `Put(d)`.
     #[test]
-    fn test_scan_mid_range() {
+    fn scan_mid_range() {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();

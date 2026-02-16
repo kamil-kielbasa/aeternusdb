@@ -2,6 +2,16 @@
 //! than pre-reopen data, and that the VisibilityFilter correctly uses LSN
 //! ordering for range-tombstone resolution during scans.
 //!
+//! The Log Sequence Number (LSN) is the engine's monotonic write counter.
+//! When the engine is reopened, it must resume from the highest LSN seen
+//! in the persisted data so that all new writes receive LSNs strictly
+//! greater than any pre-existing entry. This is critical for the LSM-tree
+//! merge: the entry with the highest LSN for a given key always wins.
+//! These tests verify that overwrites, deletes, and range tombstones
+//! issued after a reopen correctly shadow older data, and that the
+//! `VisibilityFilter` respects LSN ordering when deciding whether a
+//! range tombstone hides a point put (or vice versa).
+//!
 //! ## Layer coverage
 //! - All tests use `memtable_sstable` (cross-session LSN ordering)
 //!
@@ -21,6 +31,20 @@ mod tests {
     // 1. Overwrite after reopen shadows old value
     // ================================================================
 
+    /// # Scenario
+    /// A write issued after reopen shadows the value from the previous session.
+    ///
+    /// # Starting environment
+    /// Engine with key `"k"` = `"old"` written and closed.
+    ///
+    /// # Actions
+    /// 1. Reopen the engine.
+    /// 2. Overwrite `"k"` = `"new"`.
+    /// 3. Get `"k"`.
+    ///
+    /// # Expected behavior
+    /// Returns `Some("new")` — the post-reopen write has a higher LSN
+    /// than the pre-reopen entry, so it takes precedence.
     #[test]
     fn memtable_sstable__writes_after_reopen_shadow_old() {
         let dir = TempDir::new().unwrap();
@@ -42,6 +66,20 @@ mod tests {
     // 2. Delete after reopen hides old put
     // ================================================================
 
+    /// # Scenario
+    /// A delete issued after reopen hides the value from the previous session.
+    ///
+    /// # Starting environment
+    /// Engine with key `"k"` = `"v"` written and closed.
+    ///
+    /// # Actions
+    /// 1. Reopen the engine.
+    /// 2. Delete `"k"`.
+    /// 3. Get `"k"`.
+    ///
+    /// # Expected behavior
+    /// Returns `None` — the post-reopen tombstone has a higher LSN and
+    /// hides the old put.
     #[test]
     fn memtable_sstable__delete_after_reopen_hides_old() {
         let dir = TempDir::new().unwrap();
@@ -63,6 +101,21 @@ mod tests {
     // 3. Range-delete after reopen hides old puts
     // ================================================================
 
+    /// # Scenario
+    /// A range-delete issued after reopen hides multiple keys from the
+    /// previous session.
+    ///
+    /// # Starting environment
+    /// Engine with keys `key_00`..`key_09` written and closed.
+    ///
+    /// # Actions
+    /// 1. Reopen the engine.
+    /// 2. Range-delete `["key_03", "key_07")`.
+    /// 3. Get all 10 keys.
+    ///
+    /// # Expected behavior
+    /// Keys 3–6: `None` (range-deleted with higher LSN).
+    /// All others: original values.
     #[test]
     fn memtable_sstable__range_delete_after_reopen_hides_old() {
         let dir = TempDir::new().unwrap();
@@ -107,6 +160,22 @@ mod tests {
     // 4. LSN continuity across multiple reopen cycles
     // ================================================================
 
+    /// # Scenario
+    /// LSN counter correctly resumes across 3 reopen cycles, ensuring the
+    /// latest overwrite always wins.
+    ///
+    /// # Starting environment
+    /// Empty temporary directory.
+    ///
+    /// # Actions
+    /// 1. Cycle 1: put `"k"` = `"v1"`, close.
+    /// 2. Cycle 2: reopen, overwrite `"k"` = `"v2"`, close.
+    /// 3. Cycle 3: reopen, overwrite `"k"` = `"v3"`, close.
+    /// 4. Final reopen: get `"k"`.
+    ///
+    /// # Expected behavior
+    /// Returns `Some("v3")` — each cycle’s write gets a higher LSN than
+    /// the previous, so `"v3"` (from cycle 3) is the winner.
     #[test]
     fn memtable_sstable__lsn_continuity_across_reopens() {
         let dir = TempDir::new().unwrap();
@@ -140,6 +209,19 @@ mod tests {
     //    shadows SSTable value)
     // ================================================================
 
+    /// # Scenario
+    /// Scan correctly resolves a post-reopen overwrite against SSTable data.
+    ///
+    /// # Starting environment
+    /// Engine with 30 keys pushed to SSTables (128-byte buffer), then closed.
+    ///
+    /// # Actions
+    /// 1. Reopen and overwrite `key_0010` = `"NEW"` in the active memtable.
+    /// 2. Scan the full range.
+    ///
+    /// # Expected behavior
+    /// The scan entry for `key_0010` has value `"NEW"` (from the post-reopen
+    /// put), not the SSTable value. LSN ordering is respected in scan merging.
     #[test]
     fn memtable_sstable__scan_respects_lsn_after_reopen() {
         let dir = TempDir::new().unwrap();
@@ -177,6 +259,22 @@ mod tests {
     //    Scan should show the put.
     // ================================================================
 
+    /// # Scenario
+    /// A range tombstone with a LOWER LSN does NOT hide a put with a
+    /// HIGHER LSN, even when both are in SSTables.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte buffer.
+    ///
+    /// # Actions
+    /// 1. Write a range-delete `[key_0003, key_0008)` FIRST (gets low LSN).
+    /// 2. Write 40 puts (including keys 3–7) which get higher LSNs.
+    ///    By now the range tombstone is in an older SSTable.
+    /// 3. Scan `[key_0003, key_0008)`.
+    ///
+    /// # Expected behavior
+    /// All 5 keys (3–7) are visible in the scan — their puts have higher
+    /// LSNs than the range tombstone, so they are NOT hidden.
     #[test]
     fn memtable_sstable__older_tombstone_no_hide_newer_put() {
         let dir = TempDir::new().unwrap();
@@ -223,6 +321,21 @@ mod tests {
     //    Scan should hide those puts.
     // ================================================================
 
+    /// # Scenario
+    /// A range tombstone with a HIGHER LSN DOES hide puts with LOWER LSNs.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte buffer.
+    ///
+    /// # Actions
+    /// 1. Write 30 puts FIRST (keys 0–29, low LSNs → flushed to SSTables).
+    /// 2. Range-delete `[key_0010, key_0020)` (higher LSN than any put).
+    /// 3. Scan the full range.
+    ///
+    /// # Expected behavior
+    /// Keys 10–19 are ABSENT from the scan — the range tombstone has a
+    /// higher LSN than the puts it covers. Keys outside the range (0–9,
+    /// 20–29) remain visible.
     #[test]
     fn memtable_sstable__newer_tombstone_hides_older_put() {
         let dir = TempDir::new().unwrap();

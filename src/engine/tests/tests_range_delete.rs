@@ -1,5 +1,25 @@
 //! Range-delete correctness tests.
 //!
+//! This module exhaustively tests the `delete_range(start, end)` operation
+//! for boundary correctness, composability, and cross-layer visibility.
+//! A range-delete creates a tombstone `[start, end)` (start-inclusive,
+//! end-exclusive) that hides every key `k` where `start <= k < end`.
+//!
+//! Test groups:
+//! - **Single-key range** — `[k, k+1)` acts like a point delete.
+//! - **Partial range** — only a subset of existing keys is deleted.
+//! - **Empty / reversed range** — no-op; nothing is deleted.
+//! - **Overlapping ranges** — the union of intervals is deleted.
+//! - **Nested ranges** — inner range is redundant, outer governs.
+//! - **Adjacent ranges** — touching but non-overlapping intervals.
+//! - **Range beyond existing keys** — no error; keys within range are deleted.
+//! - **Delete-all** — `[\x00, \xff)` wipes every key.
+//! - **Cross-layer** — a memtable range-delete hides SSTable keys.
+//!
+//! Local helpers: `populate(n)` inserts `key_00`..`key_{n-1}` with
+//! corresponding `val_*` values; `assert_exists(i)` / `assert_deleted(i)`
+//! assert presence or absence of `key_{i}`.
+//!
 //! ## Layer coverage
 //! - `memtable__*`: memtable only (64 KB buffer)
 //! - `memtable_sstable__*`: range tombstones hiding SSTable keys
@@ -50,6 +70,20 @@ mod tests {
     // Single-key range [k, k+1) — equivalent to point delete
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range `[key_05, key_06)` deletes exactly one key, behaving
+    /// like a point delete.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config; keys `key_00`–`key_09`
+    /// inserted via `populate(10)`.
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_05", "key_06")`.
+    /// 2. Get each key 0–9.
+    ///
+    /// # Expected behavior
+    /// Only `key_05` returns `None`; all other keys remain present.
     #[test]
     fn memtable__range_delete_single_key() {
         let tmp = TempDir::new().unwrap();
@@ -74,6 +108,18 @@ mod tests {
     // Partial range
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A partial range-delete removes a subset of keys.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 10 keys inserted.
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_03", "key_07")` — deletes keys 3, 4, 5, 6.
+    /// 2. Get each key 0–9.
+    ///
+    /// # Expected behavior
+    /// Keys 0–2 and 7–9 present; keys 3–6 return `None`.
     #[test]
     fn memtable__range_delete_partial() {
         let tmp = TempDir::new().unwrap();
@@ -100,6 +146,19 @@ mod tests {
     // Empty range (start >= end)
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Range-deletes where `start == end` or `start > end` are no-ops.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 5 keys inserted.
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_02", "key_02")` — empty (start == end).
+    /// 2. `delete_range("key_04", "key_01")` — reversed (start > end).
+    /// 3. Get each key 0–4.
+    ///
+    /// # Expected behavior
+    /// All 5 keys remain present — no data was deleted.
     #[test]
     fn memtable__range_delete_empty_range_is_noop() {
         let tmp = TempDir::new().unwrap();
@@ -126,6 +185,20 @@ mod tests {
     // Overlapping ranges
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Two overlapping range-deletes produce the union of their intervals.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 20 keys inserted.
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_03", "key_10")`.
+    /// 2. `delete_range("key_07", "key_15")`.
+    /// 3. Get each key 0–19.
+    ///
+    /// # Expected behavior
+    /// Union `[key_03, key_15)` is deleted — keys 3–14 return `None`.
+    /// Keys 0–2 and 15–19 remain present.
     #[test]
     fn memtable__range_delete_overlapping() {
         let tmp = TempDir::new().unwrap();
@@ -156,6 +229,20 @@ mod tests {
     // Nested ranges
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A smaller (inner) range-delete inside a larger (outer) one is
+    /// redundant — the outer range already covers it.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 20 keys inserted.
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_02", "key_18")` (outer).
+    /// 2. `delete_range("key_05", "key_10")` (inner, redundant).
+    /// 3. Get each key 0–19.
+    ///
+    /// # Expected behavior
+    /// Keys 2–17 return `None` (outer interval); keys 0–1 and 18–19 present.
     #[test]
     fn memtable__range_delete_nested() {
         let tmp = TempDir::new().unwrap();
@@ -186,6 +273,21 @@ mod tests {
     // Adjacent ranges
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// Two adjacent (touching, non-overlapping) range-deletes together
+    /// cover a contiguous interval.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 20 keys inserted.
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_03", "key_07")`.
+    /// 2. `delete_range("key_07", "key_12")`.
+    /// 3. Get each key 0–19.
+    ///
+    /// # Expected behavior
+    /// Keys 3–11 return `None`; keys 0–2 and 12–19 present.
+    /// No gap at the boundary — `key_07` is deleted by the second range.
     #[test]
     fn memtable__range_delete_adjacent() {
         let tmp = TempDir::new().unwrap();
@@ -215,6 +317,19 @@ mod tests {
     // Range delete that covers keys beyond what exists
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete whose end extends past the last existing key.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 10 keys inserted (`key_00`–`key_09`).
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_05", "key_99")` — extends well past `key_09`.
+    /// 2. Get each key 0–9.
+    ///
+    /// # Expected behavior
+    /// Keys 0–4 present; keys 5–9 return `None`.
+    /// No error for the non-existent portion of the range.
     #[test]
     fn memtable__range_delete_beyond_existing() {
         let tmp = TempDir::new().unwrap();
@@ -234,6 +349,18 @@ mod tests {
         }
     }
 
+    /// # Scenario
+    /// A full-keyspace range-delete `[\x00, \xff)` wipes every key.
+    ///
+    /// # Starting environment
+    /// Fresh engine; 10 keys inserted.
+    ///
+    /// # Actions
+    /// 1. `delete_range("\x00", "\xff")`.
+    /// 2. Get each key 0–9.
+    ///
+    /// # Expected behavior
+    /// All keys return `None`.
     #[test]
     fn memtable__range_delete_all_keys() {
         let tmp = TempDir::new().unwrap();
@@ -254,6 +381,22 @@ mod tests {
     // Range delete with SSTables
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete in the active memtable hides keys that have already
+    /// been flushed to an SSTable.
+    ///
+    /// # Starting environment
+    /// Engine created via `engine_with_sstables(200, "key")` — 200 keys
+    /// flushed to disk (small-buffer config triggers flushes during insert).
+    ///
+    /// # Actions
+    /// 1. `delete_range("key_0050", "key_0100")` (in memtable).
+    /// 2. Get each key 0–199.
+    ///
+    /// # Expected behavior
+    /// Keys 50–99 return `None` (range-deleted); keys 0–49 and 100–199
+    /// remain present. The memtable range tombstone correctly shadows
+    /// the older SSTable point records.
     #[test]
     fn memtable_sstable__range_delete_hides_keys() {
         let tmp = TempDir::new().unwrap();

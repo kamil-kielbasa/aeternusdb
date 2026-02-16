@@ -1,4 +1,27 @@
 //! Layer-interaction tests: memtable ↔ frozen ↔ SSTable ordering and shadowing.
+//!
+//! The engine resolves every key by consulting layers in recency order:
+//! **active memtable → frozen memtables → SSTables (newest first)**.
+//! A write in a newer layer shadows any entry in an older layer, regardless
+//! of the operation type (put, point-delete, range-delete).
+//!
+//! Coverage:
+//! - Range delete in memtable hides SSTable value
+//! - Newer SSTable shadows older SSTable
+//! - Active memtable overrides frozen memtable
+//! - Point delete in memtable hides SSTable value
+//! - Range tombstone in newer SSTable masks older puts
+//! - Put in active memtable resurrects a deleted key
+//! - Mixed operations across multiple flushes
+//! - Multiple SSTables created and readable
+//! - Overwrite across multiple SSTables
+//! - Delete across multiple SSTables
+//! - Scan across multiple SSTables
+//! - Range delete across multiple SSTables
+//!
+//! ## See also
+//! - [`tests_precedence`]   — put / delete / range-delete precedence rules
+//! - [`tests_multi_sstable`] — multi-SSTable merge correctness
 
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -11,6 +34,19 @@ mod tests {
     // Range delete in memtable hides SSTable value
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete issued against the active memtable must hide keys
+    /// that physically reside in an older SSTable.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys (`key_0000`–`key_0199`) flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. Confirm `key_0075` is readable.
+    /// 2. `delete_range("key_0070", "key_0080")` in the active memtable.
+    ///
+    /// # Expected behavior
+    /// Keys 70–79 return `None`; keys 69 and 80 remain visible.
     #[test]
     fn memtable_sstable__range_delete_hides_sstable_value() {
         let tmp = TempDir::new().unwrap();
@@ -44,6 +80,19 @@ mod tests {
     // Newer SSTable shadows older SSTable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// When the same key exists in two SSTables, the value from the newer
+    /// SSTable must win.
+    ///
+    /// # Starting environment
+    /// Empty engine.
+    ///
+    /// # Actions
+    /// 1. Insert 150 keys with `old_*` values → flushed to SSTables.
+    /// 2. Overwrite keys 0–79 with `new_*` values → more SSTables created.
+    ///
+    /// # Expected behavior
+    /// Keys 0–79 return `new_*` values; keys 80–149 return `old_*` values.
     #[test]
     fn memtable_sstable__newer_sstable_shadows_older() {
         let tmp = TempDir::new().unwrap();
@@ -94,6 +143,19 @@ mod tests {
     // Active memtable overrides frozen memtable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A write in the active memtable must shadow a value sitting in a
+    /// frozen (pending-flush) memtable.
+    ///
+    /// # Starting environment
+    /// Engine with a small write-buffer (triggers frequent freezes).
+    ///
+    /// # Actions
+    /// 1. Write 100 keys → some land in frozen memtables.
+    /// 2. Overwrite keys 0–9 with `override_*` values in the active memtable.
+    ///
+    /// # Expected behavior
+    /// Keys 0–9 return `override_*` values.
     #[test]
     fn memtable_sstable__active_memtable_overrides_frozen() {
         let tmp = TempDir::new().unwrap();
@@ -131,6 +193,19 @@ mod tests {
     // Delete in newer layer hides put in older SSTable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A point-delete in the active memtable hides a put that lives in an
+    /// older SSTable.
+    ///
+    /// # Starting environment
+    /// Engine with 200 keys flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. Confirm `key_0010` is readable.
+    /// 2. `delete("key_0010")` in the active memtable.
+    ///
+    /// # Expected behavior
+    /// `get("key_0010")` returns `None`.
     #[test]
     fn memtable_sstable__delete_hides_older_sstable() {
         let tmp = TempDir::new().unwrap();
@@ -148,6 +223,18 @@ mod tests {
     // Range tombstone in newer SSTable masks point puts in older SSTable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A range-delete that is flushed (or still in memtable) must mask
+    /// point puts residing in older SSTables.
+    ///
+    /// # Starting environment
+    /// Engine with 150 keys flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. `delete_range("rk_0020", "rk_0040")`.
+    ///
+    /// # Expected behavior
+    /// Keys 20–39 return `None`; keys 19 and 40 remain visible.
     #[test]
     fn memtable_sstable__range_masks_older_puts() {
         let tmp = TempDir::new().unwrap();
@@ -187,6 +274,18 @@ mod tests {
     // Put in active memtable resurrects key deleted in SSTable
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A put after a delete for the same key must make the key visible again.
+    ///
+    /// # Starting environment
+    /// Engine with 150 keys flushed to SSTables.
+    ///
+    /// # Actions
+    /// 1. `delete("x_0042")` → key is gone.
+    /// 2. `put("x_0042", "resurrected")` → key comes back.
+    ///
+    /// # Expected behavior
+    /// `get("x_0042")` returns `Some("resurrected")`.
     #[test]
     fn memtable_sstable__put_resurrects_deleted_key() {
         let tmp = TempDir::new().unwrap();
@@ -218,6 +317,26 @@ mod tests {
     // Mixed operations across multiple flushes
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// A complex sequence of puts, point-deletes, range-deletes, and
+    /// re-inserts across multiple flush cycles must resolve correctly.
+    ///
+    /// # Starting environment
+    /// Empty engine.
+    ///
+    /// # Actions
+    /// 1. Insert 200 keys (phase 1 values) → SSTables.
+    /// 2. Point-delete all even keys.
+    /// 3. `delete_range("m_0150", "m_0180")`.
+    /// 4. Re-insert `m_0010` and `m_0160` with new values.
+    ///
+    /// # Expected behavior
+    /// - `m_0010` → `"revived"` (even-deleted then re-inserted).
+    /// - `m_0011` → phase 1 value (odd, untouched).
+    /// - `m_0050` → `None` (even, deleted).
+    /// - `m_0155` → `None` (odd but inside range-delete).
+    /// - `m_0160` → `"revived_range"` (even + range-deleted + re-inserted).
+    /// - `m_0185` → phase 1 value (odd, outside range).
     #[test]
     fn memtable_sstable__mixed_ops_across_flushes() {
         let tmp = TempDir::new().unwrap();
@@ -284,6 +403,19 @@ mod tests {
     // Multiple SSTables: verify count and reads merge correctly
     // ----------------------------------------------------------------
 
+    /// # Scenario
+    /// With a small write-buffer, many puts create multiple SSTables;
+    /// reads must merge across all of them.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte write-buffer.
+    ///
+    /// # Actions
+    /// 1. Insert 50 keys with padding values.
+    ///
+    /// # Expected behavior
+    /// At least 2 SSTables are created; all 50 keys are readable with
+    /// correct values.
     #[test]
     fn multiple_sstables_created_and_readable() {
         let tmp = TempDir::new().unwrap();
@@ -318,6 +450,19 @@ mod tests {
         }
     }
 
+    /// # Scenario
+    /// Overwriting the same keys in a second round creates additional
+    /// SSTables; the newest values must win on read.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte write-buffer.
+    ///
+    /// # Actions
+    /// 1. Insert 30 keys (`round1_*`) → multiple SSTables.
+    /// 2. Overwrite the same 30 keys (`round2_*`) → more SSTables.
+    ///
+    /// # Expected behavior
+    /// All 30 keys return `round2_*` values.
     #[test]
     fn overwrite_across_multiple_sstables() {
         let tmp = TempDir::new().unwrap();
@@ -366,6 +511,19 @@ mod tests {
         }
     }
 
+    /// # Scenario
+    /// Point-deletes issued after data has been flushed to multiple
+    /// SSTables must hide the correct keys.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte write-buffer.
+    ///
+    /// # Actions
+    /// 1. Insert 40 keys → multiple SSTables.
+    /// 2. Point-delete keys 0–19.
+    ///
+    /// # Expected behavior
+    /// Keys 0–19 return `None`; keys 20–39 remain readable.
     #[test]
     fn delete_across_multiple_sstables() {
         let tmp = TempDir::new().unwrap();
@@ -411,6 +569,19 @@ mod tests {
         }
     }
 
+    /// # Scenario
+    /// A full-range scan must merge records from multiple SSTables
+    /// into a single sorted, deduplicated result set.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte write-buffer.
+    ///
+    /// # Actions
+    /// 1. Insert 50 keys → multiple SSTables.
+    /// 2. `scan("sc_", "sc_\xff")`.
+    ///
+    /// # Expected behavior
+    /// 50 key-value pairs in sorted order with correct values.
     #[test]
     fn scan_across_multiple_sstables() {
         let tmp = TempDir::new().unwrap();
@@ -446,6 +617,19 @@ mod tests {
         }
     }
 
+    /// # Scenario
+    /// A range-delete that spans keys stored in different SSTables
+    /// must hide all affected keys.
+    ///
+    /// # Starting environment
+    /// Engine with 128-byte write-buffer.
+    ///
+    /// # Actions
+    /// 1. Insert 40 keys → multiple SSTables.
+    /// 2. `delete_range("rd_0010", "rd_0030")`.
+    ///
+    /// # Expected behavior
+    /// Keys 0–9 and 30–39 survive; keys 10–29 return `None`.
     #[test]
     fn range_delete_across_multiple_sstables() {
         let tmp = TempDir::new().unwrap();

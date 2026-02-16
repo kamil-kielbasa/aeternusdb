@@ -1,10 +1,43 @@
+//! Frozen memtable tests.
+//!
+//! A `FrozenMemtable` is an immutable snapshot of an active `Memtable`.
+//! It exposes `get()`, `scan()`, and `iter_for_flush()` with the same
+//! semantics as the original, but no further mutations are allowed.
+//!
+//! These tests verify that freezing a memtable preserves the data
+//! faithfully and that the underlying WAL file remains on disk as long
+//! as the frozen memtable is alive.
+//!
+//! ## See also
+//! - [`tests_basic`] — active `Memtable` API tests
+//! - [`tests_scan`] — raw multi-version scan output
+
 #[cfg(test)]
-mod frozen_tests {
+mod tests {
     use crate::memtable::{Memtable, MemtableGetResult, Record, Wal};
     use tempfile::TempDir;
 
+    // ----------------------------------------------------------------
+    // get — frozen matches active
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// `get()` on a `FrozenMemtable` returns the same results as the
+    /// active memtable it was derived from.
+    ///
+    /// # Starting environment
+    /// Active memtable with one put (`a`), one put-then-delete (`b`).
+    ///
+    /// # Actions
+    /// 1. `put("a", "1")`, `put("b", "2")`, `delete("b")`.
+    /// 2. `frozen()` → get `a`, `b`, `c`.
+    ///
+    /// # Expected behavior
+    /// - `a` → `Put("1")`
+    /// - `b` → `Delete`
+    /// - `c` → `NotFound`
     #[test]
-    fn frozen_memtable_get_matches_memtable() {
+    fn get_matches_active_memtable() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
 
@@ -24,8 +57,27 @@ mod frozen_tests {
         assert_eq!(frozen.get(b"c").unwrap(), MemtableGetResult::NotFound);
     }
 
+    // ----------------------------------------------------------------
+    // scan — frozen matches active
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// `scan()` on a `FrozenMemtable` produces the same raw multi-version
+    /// output (including tombstones) as the active memtable.
+    ///
+    /// # Starting environment
+    /// Active memtable with puts `a`, `b`, `c` and a range-delete `[b, d)`.
+    ///
+    /// # Actions
+    /// 1. Insert 3 keys + range-delete.
+    /// 2. `frozen()` → `scan("a", "z")`.
+    /// 3. Compare each record to the expected list.
+    ///
+    /// # Expected behavior
+    /// 4 records: `Put(a)`, `RangeDelete(b..d)`, `Put(b)`, `Put(c)`.
+    /// Keys, values, and LSNs match; timestamps are non-zero.
     #[test]
-    fn frozen_memtable_scan_matches_memtable() {
+    fn scan_matches_active_memtable() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
 
@@ -80,7 +132,7 @@ mod frozen_tests {
                         key: ek,
                         value: ev,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -97,7 +149,7 @@ mod frozen_tests {
                     Record::Delete {
                         key: ek,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -115,7 +167,7 @@ mod frozen_tests {
                         start: ek,
                         end: eks,
                         lsn: elsn,
-                        timestamp: ets,
+                        timestamp: _ets,
                     },
                 ) => {
                     assert_eq!(rk, ek);
@@ -128,8 +180,25 @@ mod frozen_tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // iter_for_flush — all records present
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// `iter_for_flush()` on a `FrozenMemtable` returns every latest-
+    /// version record including tombstones.
+    ///
+    /// # Starting environment
+    /// Active memtable: `put(a)`, `put(b)`, `delete(a)`, `delete_range(c, e)`.
+    ///
+    /// # Actions
+    /// 1. `frozen()` → `iter_for_flush()`.
+    ///
+    /// # Expected behavior
+    /// 3 records: `Put(b)`, `Delete(a)`, `RangeDelete(c..e)`.
+    /// (The earlier `Put(a)` is superseded by `Delete(a)`.)
     #[test]
-    fn frozen_memtable_iter_for_flush_returns_all_records() {
+    fn iter_for_flush_returns_all_records() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("wal-000000.log");
 
@@ -163,8 +232,28 @@ mod frozen_tests {
         )));
     }
 
+    // ----------------------------------------------------------------
+    // WAL file lifetime guarantee
+    // ----------------------------------------------------------------
+
+    /// # Scenario
+    /// The WAL file must remain on disk as long as its `FrozenMemtable`
+    /// is alive (the frozen memtable holds an `Arc` to the WAL).
+    ///
+    /// # Starting environment
+    /// Active memtable with several operations.
+    ///
+    /// # Actions
+    /// 1. Put + delete.
+    /// 2. `frozen()`, drop the active memtable scope.
+    /// 3. Verify WAL file still exists.
+    /// 4. Reopen WAL and replay → verify 3 records.
+    ///
+    /// # Expected behavior
+    /// The WAL file is not deleted prematurely; replay returns all
+    /// 3 operations (put, put, delete).
     #[test]
-    fn frozen_memtable_keeps_wal_alive() {
+    fn keeps_wal_alive() {
         let tmp = TempDir::new().unwrap();
         let wal_path = tmp.path().join("wal-000000.log");
 

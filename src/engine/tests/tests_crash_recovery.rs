@@ -4,9 +4,17 @@
 //! is **never** reached by the normal close-then-reopen tests (because
 //! `close()` flushes all frozen memtables to SSTables first).
 //!
+//! A real crash (power failure, OOM kill, SIGKILL) leaves the engine in one
+//! of several states: (a) only the active WAL has data, (b) one or more
+//! frozen memtables exist alongside SSTables, or (c) a mix of puts, deletes,
+//! and range-deletes are spread across all three layers. Every test simulates
+//! a crash by dropping the `Engine` struct without calling `close()`, then
+//! reopens and verifies that all committed data is recovered via WAL replay.
+//!
 //! ## Layer coverage
-//! - `memtable__*`: active WAL only (no freeze triggered)
+//! - `memtable__*`: active WAL only (no freeze triggered — tests WAL replay)
 //! - `memtable_sstable__*`: frozen memtables + SSTables survive crash
+//!   (tests frozen-WAL replay combined with SSTable reads)
 //!
 //! ## See also
 //! - [`tests_recovery`] — clean close → reopen path
@@ -78,6 +86,22 @@ mod tests {
     // 1. Active WAL only — no freeze triggered
     // ================================================================
 
+    /// # Scenario
+    /// Active WAL data (puts only, no freeze) survives a simulated crash.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config (64 KB buffer) — no frozen
+    /// memtables, no SSTables.
+    ///
+    /// # Actions
+    /// 1. Put 3 keys (`k1`, `k2`, `k3`).
+    /// 2. Verify frozen_count = 0 and sstables_count = 0.
+    /// 3. Drop the engine without calling `close()` (simulates crash).
+    /// 4. Reopen and get all 3 keys.
+    ///
+    /// # Expected behavior
+    /// All 3 keys are recovered — the active WAL is replayed into a new
+    /// memtable during `Engine::open()`.
     #[test]
     fn memtable__crash_recovery_active_wal_puts() {
         let dir = TempDir::new().unwrap();
@@ -103,6 +127,19 @@ mod tests {
     // 2. Frozen memtable survives crash (frozen-WAL replay path)
     // ================================================================
 
+    /// # Scenario
+    /// Data in a frozen memtable (not yet flushed to SSTable) survives crash.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer (128 bytes) — writes fill up quickly.
+    ///
+    /// # Actions
+    /// 1. Write keys until `frozen_count >= 1` (via `fill_until_frozen`).
+    /// 2. Drop without `close()` — frozen memtable NOT flushed to SSTable.
+    /// 3. Reopen and get all written keys.
+    ///
+    /// # Expected behavior
+    /// Every key is recovered — the frozen memtable's WAL is replayed.
     #[test]
     fn memtable__crash_recovery_with_frozen() {
         let dir = TempDir::new().unwrap();
@@ -137,6 +174,22 @@ mod tests {
     // 3. Frozen memtable + SSTables survive crash
     // ================================================================
 
+    /// # Scenario
+    /// All three layers (active memtable + frozen memtable + SSTables)
+    /// are populated, then the engine crashes.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer (128 bytes).
+    ///
+    /// # Actions
+    /// 1. Write keys until both `sstables_count > 0` AND `frozen_count >= 1`
+    ///    (via `fill_until_sstable_and_frozen`).
+    /// 2. Drop without `close()`.
+    /// 3. Reopen and get all written keys.
+    ///
+    /// # Expected behavior
+    /// All keys are recovered — data from SSTables, the replayed frozen WAL,
+    /// and the active WAL are all merged correctly.
     #[test]
     fn memtable_sstable__crash_recovery_frozen_and_sstable() {
         let dir = TempDir::new().unwrap();
@@ -172,6 +225,22 @@ mod tests {
     // 4. Delete tombstones in active WAL survive crash
     // ================================================================
 
+    /// # Scenario
+    /// Delete tombstones in the active WAL survive a crash.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config (no freeze triggered).
+    ///
+    /// # Actions
+    /// 1. Put `"keep"` = `"yes"` and `"gone"` = `"bye"`.
+    /// 2. Delete `"gone"`.
+    /// 3. Verify frozen_count = 0.
+    /// 4. Drop without `close()`.
+    /// 5. Reopen and get both keys.
+    ///
+    /// # Expected behavior
+    /// `"keep"` returns `Some("yes")`; `"gone"` returns `None` — the
+    /// tombstone in the WAL is replayed correctly.
     #[test]
     fn memtable__crash_recovery_delete_in_active_wal() {
         let dir = TempDir::new().unwrap();
@@ -195,6 +264,22 @@ mod tests {
     // 5. Range-delete tombstones in active WAL survive crash
     // ================================================================
 
+    /// # Scenario
+    /// Range-delete tombstones in the active WAL survive a crash.
+    ///
+    /// # Starting environment
+    /// Fresh engine with memtable-only config (no freeze triggered).
+    ///
+    /// # Actions
+    /// 1. Put 10 two-byte keys `[k, 0]` through `[k, 9]`.
+    /// 2. Range-delete `[k\x03, k\x07)` — covers keys 3–6.
+    /// 3. Verify frozen_count = 0.
+    /// 4. Drop without `close()`.
+    /// 5. Reopen and get all 10 keys.
+    ///
+    /// # Expected behavior
+    /// Keys 3–6 return `None`; all others return their original values.
+    /// The range tombstone in the WAL is correctly replayed.
     #[test]
     fn memtable__crash_recovery_range_delete_in_wal() {
         let dir = TempDir::new().unwrap();
@@ -233,6 +318,24 @@ mod tests {
     // 6. Delete tombstones in frozen memtable survive crash
     // ================================================================
 
+    /// # Scenario
+    /// Delete tombstones in a frozen memtable survive a crash.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer; keys 0–49 are inserted and drained to
+    /// SSTables (frozen_count = 0, sstables_count > 0).
+    ///
+    /// # Actions
+    /// 1. Phase 1: populate 50 keys into SSTables.
+    /// 2. Phase 2: drain all frozen memtables to SSTables.
+    /// 3. Phase 3: issue point deletes until `frozen_count >= 1` (the frozen
+    ///    memtable now contains tombstones).
+    /// 4. Drop without `close()`.
+    /// 5. Reopen and get all 50 keys.
+    ///
+    /// # Expected behavior
+    /// Deleted keys return `None`; non-deleted keys return their values.
+    /// The tombstones in the frozen memtable’s WAL are correctly replayed.
     #[test]
     fn memtable_sstable__crash_recovery_frozen_with_deletes() {
         let dir = TempDir::new().unwrap();
@@ -300,6 +403,23 @@ mod tests {
     // 7. Range-delete tombstones in frozen memtable survive crash
     // ================================================================
 
+    /// # Scenario
+    /// Range-delete tombstones in a frozen memtable survive a crash.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer; 50 keys populated and drained to SSTables.
+    ///
+    /// # Actions
+    /// 1. Phase 1: populate 50 keys into SSTables.
+    /// 2. Phase 2: drain frozen memtables.
+    /// 3. Phase 3: issue range-delete `[key_0010, key_0020)`, then write
+    ///    filler until `frozen_count >= 1`.
+    /// 4. Drop without `close()`.
+    /// 5. Reopen and get keys inside and outside the deleted range.
+    ///
+    /// # Expected behavior
+    /// Keys 10–19: `None` (range-deleted). Keys 0–9 and 20–49: present.
+    /// The range tombstone persisted in the frozen WAL is correctly replayed.
     #[test]
     fn memtable_sstable__crash_recovery_frozen_with_range_deletes() {
         let dir = TempDir::new().unwrap();
@@ -374,6 +494,21 @@ mod tests {
     // 8. Scan returns correct results after crash (no close)
     // ================================================================
 
+    /// # Scenario
+    /// Scan returns correct, sorted results after a crash with all three
+    /// storage layers populated.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer.
+    ///
+    /// # Actions
+    /// 1. Write keys until `sstables_count > 0` AND `frozen_count >= 1`.
+    /// 2. Drop without `close()`.
+    /// 3. Reopen and scan the full key range.
+    ///
+    /// # Expected behavior
+    /// Scan returns all written keys in sorted order. The count matches the
+    /// total keys written before the crash.
     #[test]
     fn memtable_sstable__crash_recovery_scan_correct() {
         let dir = TempDir::new().unwrap();
@@ -411,6 +546,28 @@ mod tests {
     //    crash, reopen, full verification via get + scan.
     // ================================================================
 
+    /// # Scenario
+    /// Mixed operations (puts + point deletes + range deletes + overwrites)
+    /// across all three layers survive a crash, verified via both get and scan.
+    ///
+    /// # Starting environment
+    /// Engine with small buffer (128 bytes).
+    ///
+    /// # Actions
+    /// 1. Put 50 keys.
+    /// 2. Point-delete `key_0005` and `key_0015`.
+    /// 3. Range-delete `[key_0030, key_0040)`.
+    /// 4. Overwrite `key_0002` with a new value.
+    /// 5. Write padding to ensure `frozen_count >= 1` and `sstables_count > 0`.
+    /// 6. Drop without `close()`.
+    /// 7. Reopen; get individual keys and scan the full range.
+    ///
+    /// # Expected behavior
+    /// - Point-deleted keys (5, 15): `None`.
+    /// - Range-deleted keys (30–39): `None`.
+    /// - Overwritten key (2): returns new value.
+    /// - Surviving keys: return original values.
+    /// - Scan is sorted and excludes all deleted keys.
     #[test]
     fn memtable_sstable__crash_recovery_mixed_ops() {
         let dir = TempDir::new().unwrap();

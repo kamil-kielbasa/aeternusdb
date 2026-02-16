@@ -1247,10 +1247,13 @@ impl<'a> SSTableScanIterator<'a> {
         let entry = &self.sstable.index[self.current_block_index];
         let block_bytes = SSTable::read_block_bytes(&self.sstable.mmap, &entry.handle)?;
 
-        self.current_block_iter = Some(BlockIterator::new(block_bytes));
-        if let Some(it) = self.current_block_iter.as_mut() {
-            it.seek_to_first();
-        }
+        let (block, _) = decode_from_slice::<SSTableDataBlock, _>(
+            &block_bytes,
+            standard().with_fixed_int_encoding(),
+        )?;
+        let mut it = BlockIterator::new(block.data);
+        it.seek_to_first();
+        self.current_block_iter = Some(it);
 
         Ok(true)
     }
