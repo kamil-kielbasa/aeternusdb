@@ -262,8 +262,8 @@ mod tests {
         let before_frozen = engine.stats().unwrap().frozen_count;
         assert!(before_frozen >= 1, "Should have at least 1 frozen");
 
-        // Next put should flush the frozen → SSTable
-        engine.put(b"trigger".to_vec(), b"flush".to_vec()).unwrap();
+        // Explicitly flush frozen memtables → SSTables
+        engine.flush_all_frozen().unwrap();
         let after = engine.stats().unwrap();
         // The frozen that existed should now be an SSTable
         assert!(
@@ -485,6 +485,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let stats = engine.stats().unwrap();
         assert!(stats.sstables_count > 0, "Expected SSTables");
         assert_eq!(
@@ -547,6 +548,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let stats = engine.stats().unwrap();
         assert!(stats.sstables_count > 0, "Expected SSTables");
 

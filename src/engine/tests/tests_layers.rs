@@ -104,6 +104,7 @@ mod tests {
             let val = format!("old_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let s1 = engine.stats().unwrap().sstables_count;
         assert!(s1 > 0, "First batch should create SSTables");
 
@@ -113,6 +114,7 @@ mod tests {
             let val = format!("new_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let s2 = engine.stats().unwrap().sstables_count;
         assert!(s2 > s1, "Overwrites should create more SSTables");
 
@@ -246,6 +248,7 @@ mod tests {
             let val = format!("val_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let count_before = engine.stats().unwrap().sstables_count;
         assert!(count_before > 0);
 
@@ -297,6 +300,7 @@ mod tests {
             let val = format!("v_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         assert!(engine.stats().unwrap().sstables_count > 0);
 
         // Delete from active memtable
@@ -348,6 +352,7 @@ mod tests {
             let val = format!("p1_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         assert!(engine.stats().unwrap().sstables_count > 0);
 
         // Phase 2: delete even keys
@@ -429,6 +434,7 @@ mod tests {
             engine.put(key, val).unwrap();
         }
 
+        engine.flush_all_frozen().unwrap();
         let stats = engine.stats().unwrap();
         assert!(
             stats.sstables_count >= 2,
@@ -475,6 +481,7 @@ mod tests {
             engine.put(key, val).unwrap();
         }
 
+        engine.flush_all_frozen().unwrap();
         let s1 = engine.stats().unwrap().sstables_count;
         assert!(
             s1 >= 2,
@@ -489,6 +496,7 @@ mod tests {
             engine.put(key, val).unwrap();
         }
 
+        engine.flush_all_frozen().unwrap();
         let s2 = engine.stats().unwrap().sstables_count;
         assert!(
             s2 > s1,
@@ -536,6 +544,7 @@ mod tests {
             engine.put(key, val).unwrap();
         }
 
+        engine.flush_all_frozen().unwrap();
         let s1 = engine.stats().unwrap().sstables_count;
         assert!(s1 >= 2, "Expected at least 2 SSTables, got {}", s1);
 
@@ -593,6 +602,7 @@ mod tests {
             engine.put(key, val).unwrap();
         }
 
+        engine.flush_all_frozen().unwrap();
         let stats = engine.stats().unwrap();
         assert!(
             stats.sstables_count >= 2,
@@ -641,6 +651,7 @@ mod tests {
             engine.put(key, val).unwrap();
         }
 
+        engine.flush_all_frozen().unwrap();
         let stats = engine.stats().unwrap();
         assert!(
             stats.sstables_count >= 2,

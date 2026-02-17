@@ -84,6 +84,7 @@ pub fn engine_with_sstables(path: &Path, num_keys: usize, prefix: &str) -> Engin
         let value = format!("value_with_some_padding_{:04}", i).into_bytes();
         engine.put(key, value).expect("put");
     }
+    engine.flush_all_frozen().expect("flush");
     let stats = engine.stats().expect("stats");
     assert!(stats.sstables_count > 0, "Expected SSTables to be created");
     engine
@@ -98,6 +99,7 @@ pub fn engine_with_multi_sstables(path: &Path, num_keys: usize, prefix: &str) ->
         let value = format!("value_with_some_padding_{:04}", i).into_bytes();
         engine.put(key, value).expect("put");
     }
+    engine.flush_all_frozen().expect("flush");
     let stats = engine.stats().expect("stats");
     assert!(
         stats.sstables_count >= 2,

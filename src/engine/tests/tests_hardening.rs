@@ -718,6 +718,7 @@ mod tests {
         }
 
         // Should have many SSTables
+        engine.flush_all_frozen().unwrap();
         let stats = engine.stats().unwrap();
         assert!(
             stats.sstables_count > 0,

@@ -87,6 +87,7 @@ mod tests {
             let val = format!("round1_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let s1 = engine.stats().unwrap().sstables_count;
         assert!(s1 >= 2, "Expected >= 2 SSTables after round 1, got {}", s1);
 
@@ -96,6 +97,7 @@ mod tests {
             let val = format!("round2_{:04}", i).into_bytes();
             engine.put(key, val).unwrap();
         }
+        engine.flush_all_frozen().unwrap();
         let s2 = engine.stats().unwrap().sstables_count;
         assert!(
             s2 > s1,

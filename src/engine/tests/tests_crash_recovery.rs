@@ -51,35 +51,28 @@ mod tests {
     /// Write puts in a loop until the engine has at least one SSTable AND
     /// at least one frozen memtable (i.e. all three layers are populated).
     fn fill_until_sstable_and_frozen(engine: &Engine, prefix: &str) -> usize {
-        let mut i = 0;
+        // Phase 1: write until we get frozen memtables
+        let count1 = fill_until_frozen(engine, prefix);
+        // Phase 2: flush all frozen → creates SSTables
+        engine.flush_all_frozen().expect("flush");
+        // Phase 3: keep writing until we have another frozen memtable
+        let mut i = count1;
         loop {
             let key = format!("{}_{:04}", prefix, i).into_bytes();
             let value = format!("val_{:04}", i).into_bytes();
             engine.put(key, value).expect("put");
-            let stats = engine.stats().expect("stats");
-            if stats.sstables_count > 0 && stats.frozen_count >= 1 {
-                return i + 1;
-            }
             i += 1;
+            let stats = engine.stats().expect("stats");
+            if stats.frozen_count >= 1 {
+                return i;
+            }
             assert!(i < 10_000, "Expected SSTable + frozen within 10 000 puts");
         }
     }
 
-    /// Keep writing tiny filler puts until frozen_count drops to 0
-    /// (each put triggers flush_frozen_to_sstable at its start).
+    /// Flush all frozen memtables to SSTables.
     fn drain_frozen(engine: &Engine) {
-        let mut idx = 0u64;
-        loop {
-            let stats = engine.stats().expect("stats");
-            if stats.frozen_count == 0 {
-                break;
-            }
-            engine
-                .put(format!("_drain_{:06}", idx).into_bytes(), b"x".to_vec())
-                .expect("drain put");
-            idx += 1;
-            assert!(idx < 1_000, "Failed to drain frozen memtables");
-        }
+        engine.flush_all_frozen().expect("flush_all_frozen");
     }
 
     // ================================================================
@@ -598,11 +591,11 @@ mod tests {
                 .put(b"key_0002".to_vec(), b"new_val_0002".to_vec())
                 .unwrap();
 
-            // Ensure we have SSTables + frozen
-            let stats = engine.stats().unwrap();
-            // With 128-byte buffer and 50+ ops, we should have SSTables.
-            // If we don't yet have a frozen, write fillers until we do.
-            if stats.frozen_count == 0 {
+            // Flush all frozen to SSTables
+            engine.flush_all_frozen().unwrap();
+
+            // Ensure we have at least one frozen memtable for crash testing
+            if engine.stats().unwrap().frozen_count == 0 {
                 let mut j = 0u32;
                 while engine.stats().unwrap().frozen_count == 0 {
                     engine

@@ -525,16 +525,23 @@ impl Memtable {
             .get(key)
             .and_then(|versions| versions.values().next());
 
-        // Check if key matches any range tombstones
+        // Check if key matches any range tombstones.
+        // For each start key, we check ALL versions (not just the highest-LSN)
+        // because a narrower tombstone with a higher LSN might not cover the
+        // queried key while a wider tombstone with a lower LSN does.
         let mut covering_tombstone_lsn: Option<u64> = None;
         for (_start, versions) in guard.range_tombstones.range(..=key.to_vec()) {
-            if let Some(tombstone) = versions.values().next() {
+            for tombstone in versions.values() {
                 if tombstone.start.as_slice() <= key && key < tombstone.end.as_slice() {
                     covering_tombstone_lsn = Some(
                         covering_tombstone_lsn
                             .map(|lsn| lsn.max(tombstone.lsn))
                             .unwrap_or(tombstone.lsn),
                     );
+                    // Found the highest-LSN covering tombstone for this start
+                    // key — no need to check lower-LSN versions for the same
+                    // start key (they can only have equal or lower LSN).
+                    break;
                 }
             }
         }

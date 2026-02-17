@@ -194,8 +194,17 @@ impl Engine {
             memtable.inject_max_lsn(max_lsn + 1);
         }
 
-        // Sort frozen memtables by creation timestamp, newest first
-        frozen_memtables.sort_by(|a, b| b.creation_timestamp.cmp(&a.creation_timestamp));
+        // Sort frozen memtables by WAL sequence number, newest first.
+        // We use wal_seq rather than creation_timestamp because on crash
+        // recovery all frozen are replayed at nearly the same instant,
+        // making timestamps unreliable for ordering.
+        frozen_memtables.sort_by(|a, b| {
+            b.memtable
+                .wal
+                .header
+                .wal_seq
+                .cmp(&a.memtable.wal.header.wal_seq)
+        });
 
         // Sort sstables by creation timestamp, newest first
         sstable_handles.sort_by(|a, b| {
@@ -254,162 +263,82 @@ impl Engine {
         Ok(())
     }
 
-    pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), EngineError> {
+    /// Insert a key-value pair.
+    ///
+    /// Returns `Ok(true)` if the active memtable was frozen (caller should
+    /// arrange a flush), `Ok(false)` otherwise.
+    pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, EngineError> {
         let mut inner = self
             .inner
             .write()
             .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
 
-        if !inner.frozen.is_empty() {
-            Self::flush_frozen_to_sstable_inner(&mut inner)?;
-        }
-
         match inner.active.put(key.clone(), value.clone()) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(false),
 
             Err(MemtableError::FlushRequired) => {
-                // Get WAL ID and current max LSN before moving the memtable
-                let frozen_wal_id = inner.active.wal.header.wal_seq;
-                let current_max_lsn = inner.active.max_lsn();
-                let new_active_wal_id = frozen_wal_id + 1;
-
-                // Create new active memtable
-                let new_active = Memtable::new(
-                    format!(
-                        "{}/{}/wal-{:06}.log",
-                        inner.data_dir, MEMTABLE_DIR, new_active_wal_id
-                    ),
-                    None,
-                    inner.config.write_buffer_size,
-                )?;
-
-                // Swap out the old active memtable and freeze it
-                let old_active = std::mem::replace(&mut inner.active, new_active);
-                let frozen = old_active.frozen()?;
-                // Insert at beginning to maintain sorted order (newest first)
-                inner.frozen.insert(0, frozen);
-
-                // Ensure LSN continuity: new memtable must continue from where the old one left off
-                inner.active.inject_max_lsn(current_max_lsn);
-
-                inner.manifest.add_frozen_wal(frozen_wal_id)?;
-                inner.manifest.set_active_wal(new_active_wal_id)?;
-
+                Self::freeze_active(&mut inner)?;
                 inner.active.put(key, value)?;
 
                 let max_lsn = inner.active.max_lsn();
                 inner.manifest.update_lsn(max_lsn)?;
 
-                Ok(())
+                Ok(true)
             }
 
             Err(e) => Err(e.into()),
         }
     }
 
-    pub fn delete(&self, key: Vec<u8>) -> Result<(), EngineError> {
+    /// Delete a key (insert a point tombstone).
+    ///
+    /// Returns `Ok(true)` if the active memtable was frozen, `Ok(false)` otherwise.
+    pub fn delete(&self, key: Vec<u8>) -> Result<bool, EngineError> {
         let mut inner = self
             .inner
             .write()
             .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
 
-        if !inner.frozen.is_empty() {
-            Self::flush_frozen_to_sstable_inner(&mut inner)?;
-        }
-
         match inner.active.delete(key.clone()) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(false),
 
             Err(MemtableError::FlushRequired) => {
-                // Get WAL ID and current max LSN before moving the memtable
-                let frozen_wal_id = inner.active.wal.header.wal_seq;
-                let current_max_lsn = inner.active.max_lsn();
-                let new_active_wal_id = frozen_wal_id + 1;
-
-                // Create new active memtable
-                let new_active = Memtable::new(
-                    format!(
-                        "{}/{}/wal-{:06}.log",
-                        inner.data_dir, MEMTABLE_DIR, new_active_wal_id
-                    ),
-                    None,
-                    inner.config.write_buffer_size,
-                )?;
-
-                // Swap out the old active memtable and freeze it
-                let old_active = std::mem::replace(&mut inner.active, new_active);
-                let frozen = old_active.frozen()?;
-                // Insert at beginning to maintain sorted order (newest first)
-                inner.frozen.insert(0, frozen);
-
-                // Ensure LSN continuity: new memtable must continue from where the old one left off
-                inner.active.inject_max_lsn(current_max_lsn);
-
-                inner.manifest.add_frozen_wal(frozen_wal_id)?;
-                inner.manifest.set_active_wal(new_active_wal_id)?;
-
+                Self::freeze_active(&mut inner)?;
                 inner.active.delete(key)?;
 
                 let max_lsn = inner.active.max_lsn();
                 inner.manifest.update_lsn(max_lsn)?;
 
-                Ok(())
+                Ok(true)
             }
 
             Err(e) => Err(e.into()),
         }
     }
 
-    pub fn delete_range(&self, start_key: Vec<u8>, end_key: Vec<u8>) -> Result<(), EngineError> {
+    /// Delete all keys in `[start_key, end_key)` (insert a range tombstone).
+    ///
+    /// Returns `Ok(true)` if the active memtable was frozen, `Ok(false)` otherwise.
+    pub fn delete_range(&self, start_key: Vec<u8>, end_key: Vec<u8>) -> Result<bool, EngineError> {
         let mut inner = self
             .inner
             .write()
             .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
 
-        if !inner.frozen.is_empty() {
-            Self::flush_frozen_to_sstable_inner(&mut inner)?;
-        }
-
         match inner
             .active
             .delete_range(start_key.clone(), end_key.clone())
         {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(false),
 
             Err(MemtableError::FlushRequired) => {
-                // Get WAL ID and current max LSN before moving the memtable
-                let frozen_wal_id = inner.active.wal.header.wal_seq;
-                let current_max_lsn = inner.active.max_lsn();
-                let new_active_wal_id = frozen_wal_id + 1;
-
-                // Create new active memtable
-                let new_active = Memtable::new(
-                    format!(
-                        "{}/{}/wal-{:06}.log",
-                        inner.data_dir, MEMTABLE_DIR, new_active_wal_id
-                    ),
-                    None,
-                    inner.config.write_buffer_size,
-                )?;
-
-                // Swap out the old active memtable and freeze it
-                let old_active = std::mem::replace(&mut inner.active, new_active);
-                let frozen = old_active.frozen()?;
-                // Insert at beginning to maintain sorted order (newest first)
-                inner.frozen.insert(0, frozen);
-
-                // Ensure LSN continuity: new memtable must continue from where the old one left off
-                inner.active.inject_max_lsn(current_max_lsn);
-
-                inner.manifest.add_frozen_wal(frozen_wal_id)?;
-                inner.manifest.set_active_wal(new_active_wal_id)?;
-
+                Self::freeze_active(&mut inner)?;
                 inner.active.delete_range(start_key, end_key)?;
 
                 let max_lsn = inner.active.max_lsn();
                 inner.manifest.update_lsn(max_lsn)?;
 
-                Ok(())
+                Ok(true)
             }
 
             Err(e) => Err(e.into()),
@@ -514,13 +443,79 @@ impl Engine {
         })
     }
 
+    /// Freeze the current active memtable and swap in a fresh one.
+    /// The old memtable is pushed to the front of `inner.frozen`.
+    fn freeze_active(inner: &mut EngineInner) -> Result<(), EngineError> {
+        let frozen_wal_id = inner.active.wal.header.wal_seq;
+        let current_max_lsn = inner.active.max_lsn();
+        let new_active_wal_id = frozen_wal_id + 1;
+
+        let new_active = Memtable::new(
+            format!(
+                "{}/{}/wal-{:06}.log",
+                inner.data_dir, MEMTABLE_DIR, new_active_wal_id
+            ),
+            None,
+            inner.config.write_buffer_size,
+        )?;
+
+        let old_active = std::mem::replace(&mut inner.active, new_active);
+        let frozen = old_active.frozen()?;
+        // Insert at beginning to maintain sorted order (newest first)
+        inner.frozen.insert(0, frozen);
+
+        // Ensure LSN continuity
+        inner.active.inject_max_lsn(current_max_lsn);
+
+        inner.manifest.add_frozen_wal(frozen_wal_id)?;
+        inner.manifest.set_active_wal(new_active_wal_id)?;
+
+        Ok(())
+    }
+
+    /// Flush the oldest frozen memtable to a new SSTable.
+    ///
+    /// Returns `Ok(true)` if a frozen memtable was flushed, `Ok(false)` if
+    /// there were no frozen memtables to flush.
+    pub fn flush_oldest_frozen(&self) -> Result<bool, EngineError> {
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        if inner.frozen.is_empty() {
+            return Ok(false);
+        }
+        Self::flush_frozen_to_sstable_inner(&mut inner)?;
+        Ok(true)
+    }
+
+    /// Flush **all** frozen memtables to SSTables.
+    ///
+    /// Returns the number of frozen memtables that were flushed.
+    pub fn flush_all_frozen(&self) -> Result<usize, EngineError> {
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+
+        let mut count = 0usize;
+        while !inner.frozen.is_empty() {
+            Self::flush_frozen_to_sstable_inner(&mut inner)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     fn flush_frozen_to_sstable_inner(inner: &mut EngineInner) -> Result<(), EngineError> {
         if inner.frozen.is_empty() {
             return Ok(());
         }
 
-        // Take the first frozen memtable
-        let frozen = inner.frozen.remove(0);
+        // Take the oldest frozen memtable (last in the newest-first vec).
+        // We flush oldest first so that `insert(0, sstable)` keeps the
+        // sstables list in newest-first order after a batch flush.
+        let frozen = inner.frozen.pop().unwrap();
         let frozen_wal_id = frozen.memtable.wal.header.wal_seq;
 
         // Get all records from the frozen memtable

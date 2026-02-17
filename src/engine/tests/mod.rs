@@ -2,6 +2,7 @@ pub mod helpers;
 mod tests_crash_recovery;
 mod tests_delete;
 mod tests_edge_cases;
+mod tests_flush_api;
 mod tests_hardening;
 mod tests_layers;
 mod tests_lsn_continuity;
