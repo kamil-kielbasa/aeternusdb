@@ -184,6 +184,14 @@ pub struct Engine {
     inner: Arc<RwLock<EngineInner>>,
 }
 
+impl Clone for Engine {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 impl Engine {
     /// Opens (or creates) an engine rooted at the given directory.
     ///

@@ -60,7 +60,7 @@ use tracing::{error, info, trace};
 pub enum MemtableError {
     /// Underlying WAL I/O failure.
     #[error("WAL error: {0}")]
-    WAL(#[from] WalError),
+    Wal(#[from] WalError),
 
     /// Write buffer limit reached; a flush is required before further writes.
     #[error("Flush required")]

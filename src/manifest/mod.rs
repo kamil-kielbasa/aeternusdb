@@ -74,7 +74,7 @@ const U32_SIZE: usize = std::mem::size_of::<u32>();
 pub enum ManifestError {
     /// Underlying WAL I/O failure.
     #[error("WAL error: {0}")]
-    WAL(#[from] WalError),
+    Wal(#[from] WalError),
 
     /// Underlying I/O error.
     #[error("I/O error: {0}")]
@@ -547,7 +547,7 @@ impl Manifest {
         let iter = match self.wal.replay_iter() {
             Ok(i) => i,
             Err(e) => {
-                return Err(ManifestError::WAL(e));
+                return Err(ManifestError::Wal(e));
             }
         };
 
