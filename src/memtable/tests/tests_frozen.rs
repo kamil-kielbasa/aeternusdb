@@ -91,7 +91,7 @@ mod tests {
         let frozen = memtable.frozen().unwrap();
         let results: Vec<_> = frozen.scan(b"a", b"z").unwrap().collect();
 
-        let expected = vec![
+        let expected = [
             Record::Put {
                 key: b"a".to_vec(),
                 value: b"1".to_vec(),

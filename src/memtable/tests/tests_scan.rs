@@ -164,7 +164,7 @@ mod tests {
         let results: Vec<_> = memtable.scan(b"key0", b"key4\xff").unwrap().collect();
         assert_eq!(results.len(), 7);
 
-        let expected = vec![
+        let expected = [
             Record::Put {
                 key: b"key0".to_vec(),
                 value: b"value0".to_vec(),
@@ -346,7 +346,7 @@ mod tests {
         // Scan the full range
         let results: Vec<_> = memtable.scan(b"key0", b"key5\xff").unwrap().collect();
 
-        let expected = vec![
+        let expected = [
             Record::Put {
                 key: b"key0".to_vec(),
                 value: b"value0".to_vec(),

@@ -73,18 +73,23 @@ pub const SSTABLE_DIR: &str = "sstables";
 /// Errors that can occur during engine operations.
 #[derive(Debug, Error)]
 pub enum EngineError {
+    /// Error originating from the manifest subsystem.
     #[error("Manifest error: {0}")]
     Manifest(#[from] ManifestError),
 
+    /// Error originating from the memtable subsystem.
     #[error("Memtable error: {0}")]
     Memtable(#[from] MemtableError),
 
+    /// Error originating from the SSTable subsystem.
     #[error("SSTable error: {0}")]
     SSTable(#[from] SSTableError),
 
+    /// Underlying filesystem I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Internal invariant violation (poisoned lock, unexpected state, etc.).
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -231,19 +236,16 @@ impl Engine {
             let entry = entry?;
             let file_path = entry.path();
 
-            if file_path.is_file() && file_path.extension().and_then(|s| s.to_str()) == Some("sst")
+            if file_path.is_file()
+                && file_path.extension().and_then(|s| s.to_str()) == Some("sst")
+                && let Some(file_name) = file_path.file_name().and_then(|s| s.to_str())
+                && let Some(id) = file_name
+                    .strip_prefix("sstable-")
+                    .and_then(|s| s.strip_suffix(".sst"))
+                    .and_then(|s| s.parse::<u64>().ok())
+                && !sstables.iter().any(|entry| entry.id == id)
             {
-                if let Some(file_name) = file_path.file_name().and_then(|s| s.to_str()) {
-                    if let Some(id) = file_name
-                        .strip_prefix("sstable-")
-                        .and_then(|s| s.strip_suffix(".sst"))
-                        .and_then(|s| s.parse::<u64>().ok())
-                    {
-                        if !sstables.iter().any(|entry| entry.id == id) {
-                            fs::remove_file(&file_path)?;
-                        }
-                    }
-                }
+                fs::remove_file(&file_path)?;
             }
         }
 
@@ -875,13 +877,25 @@ impl Engine {
 /// Type alias preserving the public scan iterator name.
 pub type EngineScanIterator = utils::MergeIterator<'static>;
 
+/// Filters a sorted record stream to yield only **visible** key-value pairs.
+///
+/// Applies point tombstone and range tombstone semantics:
+/// - A `Delete` record suppresses the same key in later (lower-LSN) records.
+/// - A `RangeDelete` suppresses any `Put` whose key falls within `[start, end)`
+///   and whose LSN is lower than the tombstone's LSN.
+///
+/// The input iterator **must** be sorted by `(key ASC, LSN DESC)` — the order
+/// produced by [`MergeIterator`](utils::MergeIterator).
 pub struct VisibilityFilter<I>
 where
     I: Iterator<Item = Record>,
 {
-    input: I, // The underlying iterator of records (already sorted by key and LSN)
-    current_key: Option<Vec<u8>>, // The key currently being processed
-    active_ranges: Vec<RangeTombstone>, // Only range tombstones that cover the current key
+    /// Underlying merged record stream.
+    input: I,
+    /// The key most recently emitted or suppressed (used for dedup).
+    current_key: Option<Vec<u8>>,
+    /// Accumulated range tombstones that may cover upcoming keys.
+    active_ranges: Vec<RangeTombstone>,
 }
 
 impl<I> VisibilityFilter<I>
@@ -897,10 +911,15 @@ where
     }
 }
 
+/// An in-memory range tombstone covering keys in `[start, end)`.
 struct RangeTombstone {
+    /// Inclusive start key.
     start: Vec<u8>,
+    /// Exclusive end key.
     end: Vec<u8>,
+    /// Log sequence number of this tombstone.
     lsn: u64,
+    /// Timestamp of this tombstone.
     timestamp: u64,
 }
 
@@ -911,7 +930,7 @@ where
     type Item = (Vec<u8>, Vec<u8>); // (key, value)
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(record) = self.input.next() {
+        for record in self.input.by_ref() {
             match record {
                 Record::RangeDelete {
                     start,

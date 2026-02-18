@@ -304,10 +304,11 @@ impl<T: WalData> Wal<T> {
     fn parse_seq_from_path(path: &Path) -> Option<u64> {
         let name = path.file_name().and_then(OsStr::to_str)?;
         // Expect pattern wal-000001.log or wal-1.log etc.
-        if let Some(stripped) = name.strip_prefix("wal-") {
-            if let Some(seq_str) = stripped.strip_suffix(".log") {
-                return seq_str.parse::<u64>().ok();
-            }
+        if let Some(seq_str) = name
+            .strip_prefix("wal-")
+            .and_then(|s| s.strip_suffix(".log"))
+        {
+            return seq_str.parse::<u64>().ok();
         }
         None
     }
@@ -403,6 +404,12 @@ impl<T: WalData> Wal<T> {
         Ok(())
     }
 
+    /// Rotates to a new WAL segment with the next sequence number.
+    ///
+    /// Syncs the current WAL, opens a new WAL file with `wal_seq + 1`,
+    /// and replaces `self` with the new instance.
+    ///
+    /// Returns the new WAL sequence number.
     pub fn rotate_next(&mut self) -> Result<u64, WalError> {
         {
             let guard = self

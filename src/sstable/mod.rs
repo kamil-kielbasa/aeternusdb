@@ -33,14 +33,14 @@
 //! [FOOTER_BYTES]
 //! ```
 //!
-//! - **Header** — [`SSTableHeader`] structure with CRC32 checksum.  
-//! - **Data blocks** — store serialized [`SSTableCell`] entries (key-value or tombstone).  
+//! - **Header** — `SSTableHeader` structure with CRC32 checksum.  
+//! - **Data blocks** — store serialized `SSTableCell` entries (key-value or tombstone).  
 //! - **Bloom filter block** — fast existence checks for point keys.  
-//! - **Range deletes block** — serialized [`SSTableRangeTombstoneCell`] entries.  
+//! - **Range deletes block** — serialized `SSTableRangeTombstoneCell` entries.  
 //! - **Properties block** — table metadata such as min/max key, LSNs, timestamps, record counts.  
 //! - **Metaindex block** — directory of blocks (bloom, properties, range deletes) for easy lookup.  
 //! - **Index block** — directory of data blocks, allowing binary search for keys.  
-//! - **Footer** — [`SSTableFooter`] structure containing offsets, sizes, and CRC32 checksum.
+//! - **Footer** — `SSTableFooter` structure containing offsets, sizes, and CRC32 checksum.
 //!
 //! # Concurrency model
 //!
@@ -231,7 +231,7 @@ mod tests;
 
 use std::{
     fs::{File, OpenOptions, rename},
-    io::{self, BufWriter, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Seek, Write},
     mem,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -246,7 +246,6 @@ use bloomfilter::Bloom;
 use crc32fast::Hasher as Crc32;
 use memmap2::Mmap;
 use thiserror::Error;
-use tracing::error;
 
 // ------------------------------------------------------------------------------------------------
 // Constants
@@ -265,7 +264,7 @@ const SST_DATA_BLOCK_CHECKSUM_SIZE: usize = 4;
 // Error Types
 // ------------------------------------------------------------------------------------------------
 
-/// Represents possible errors returned by [`Memtable`] operations.
+/// Errors returned by SSTable operations (read, write, build).
 #[derive(Debug, Error)]
 pub enum SSTableError {
     /// Underlying I/O error.
@@ -511,22 +510,22 @@ pub struct SSTable {
     pub mmap: Mmap,
 
     /// Parsed header block containing magic/version information.
-    pub header: SSTableHeader,
+    pub(crate) header: SSTableHeader,
 
     /// Bloom filter block for fast membership tests.
-    pub bloom: SSTableBloomBlock,
+    pub(crate) bloom: SSTableBloomBlock,
 
     /// Properties block with statistics and metadata.
     pub properties: SSTablePropertiesBlock,
 
     /// Range delete tombstone block.
-    pub range_deletes: SSTableRangeTombstoneDataBlock,
+    pub(crate) range_deletes: SSTableRangeTombstoneDataBlock,
 
     /// Index entries mapping key ranges to data blocks.
-    pub index: Vec<SSTableIndexEntry>,
+    pub(crate) index: Vec<SSTableIndexEntry>,
 
     /// Footer containing block handles and file integrity data.
-    pub footer: SSTableFooter,
+    pub(crate) footer: SSTableFooter,
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -808,7 +807,7 @@ impl SSTable {
         iter.seek_to(key);
         let mut latest: Option<SSTGetResult> = None;
 
-        while let Some(item) = iter.next() {
+        for item in iter {
             if item.key != key {
                 break;
             }
@@ -1300,9 +1299,7 @@ impl<'a> SSTableScanIterator<'a> {
     /// automatically advancing to the next block as needed.
     fn next_point_or_delete(&mut self) -> Option<Record> {
         loop {
-            let Some(it) = self.current_block_iter.as_mut() else {
-                return None;
-            };
+            let it = self.current_block_iter.as_mut()?;
 
             if let Some(item) = it.next_item() {
                 // Stop when out of scan range
@@ -1596,7 +1593,7 @@ pub fn build_from_iterators(
         min_key = Some(next_entry.key.clone());
     }
 
-    while let Some(entry) = point_entries_peekable.next() {
+    for entry in point_entries_peekable {
         record_count += 1;
         if entry.value.is_none() {
             tombstone_count += 1;
@@ -1643,7 +1640,7 @@ pub fn build_from_iterators(
         current_block.extend_from_slice(&cell_bytes);
 
         if current_block.len() >= SST_DATA_BLOCK_MAX_SIZE {
-            let block_offset = writer.seek(SeekFrom::Current(0))?;
+            let block_offset = writer.stream_position()?;
 
             let block = SSTableDataBlock {
                 data: mem::take(&mut current_block),
@@ -1678,7 +1675,7 @@ pub fn build_from_iterators(
     }
 
     if !current_block.is_empty() {
-        let block_offset: u64 = writer.seek(SeekFrom::Current(0))?;
+        let block_offset: u64 = writer.stream_position()?;
 
         let block = SSTableDataBlock {
             data: mem::take(&mut current_block),
@@ -1707,7 +1704,7 @@ pub fn build_from_iterators(
     }
 
     // 3. Write bloom filter
-    let bloom_offset = writer.seek(SeekFrom::Current(0))?;
+    let bloom_offset = writer.stream_position()?;
     let bloom_data = bloom.as_slice().to_vec();
     let bloom_block = SSTableBloomBlock { data: bloom_data };
     let bloom_bytes = encode_to_vec(&bloom_block, config)?;
@@ -1722,10 +1719,10 @@ pub fn build_from_iterators(
     writer.write_all(&bloom_checksum.to_le_bytes())?;
 
     // 4. Build and write range deletes block
-    let range_deletes_offset = writer.seek(SeekFrom::Current(0))?;
+    let range_deletes_offset = writer.stream_position()?;
     let mut range_deletes_block = SSTableRangeTombstoneDataBlock { data: Vec::new() };
 
-    while let Some(entry) = range_tombstones_peekable.next() {
+    for entry in range_tombstones_peekable {
         if entry.timestamp < min_timestamp {
             min_timestamp = entry.timestamp;
         }
@@ -1776,11 +1773,11 @@ pub fn build_from_iterators(
         max_lsn,
         min_timestamp,
         max_timestamp,
-        min_key: min_key.unwrap_or_else(Vec::new),
-        max_key: max_key.unwrap_or_else(Vec::new),
+        min_key: min_key.unwrap_or_default(),
+        max_key: max_key.unwrap_or_default(),
     };
 
-    let properties_offset = writer.seek(SeekFrom::Current(0))?;
+    let properties_offset = writer.stream_position()?;
     let properties_bytes = encode_to_vec(&properties, config)?;
     let properties_size = properties_bytes.len() as u32;
 
@@ -1793,31 +1790,31 @@ pub fn build_from_iterators(
     writer.write_all(&properties_checksum.to_le_bytes())?;
 
     // 6. Build and write metaindex block
-    let metaindex_offset = writer.seek(SeekFrom::Current(0))?;
+    let metaindex_offset = writer.stream_position()?;
 
-    let mut meta_entries: Vec<MetaIndexEntry> = Vec::new();
-
-    meta_entries.push(MetaIndexEntry {
-        name: "filter.bloom".to_string(),
-        handle: BlockHandle {
-            offset: bloom_offset,
-            size: bloom_bytes.len() as u64,
+    let meta_entries: Vec<MetaIndexEntry> = vec![
+        MetaIndexEntry {
+            name: "filter.bloom".to_string(),
+            handle: BlockHandle {
+                offset: bloom_offset,
+                size: bloom_bytes.len() as u64,
+            },
         },
-    });
-    meta_entries.push(MetaIndexEntry {
-        name: "meta.properties".to_string(),
-        handle: BlockHandle {
-            offset: properties_offset,
-            size: properties_bytes.len() as u64,
+        MetaIndexEntry {
+            name: "meta.properties".to_string(),
+            handle: BlockHandle {
+                offset: properties_offset,
+                size: properties_bytes.len() as u64,
+            },
         },
-    });
-    meta_entries.push(MetaIndexEntry {
-        name: "meta.range_deletes".to_string(),
-        handle: BlockHandle {
-            offset: range_deletes_offset,
-            size: range_deletes_bytes.len() as u64,
+        MetaIndexEntry {
+            name: "meta.range_deletes".to_string(),
+            handle: BlockHandle {
+                offset: range_deletes_offset,
+                size: range_deletes_bytes.len() as u64,
+            },
         },
-    });
+    ];
 
     let metaindex_bytes = encode_to_vec(&meta_entries, config)?;
     let metaindex_size = metaindex_bytes.len() as u32;
@@ -1831,7 +1828,7 @@ pub fn build_from_iterators(
     writer.write_all(&metaindex_checksum.to_le_bytes())?;
 
     // 7. Write index block
-    let index_offset = writer.seek(SeekFrom::Current(0))?;
+    let index_offset = writer.stream_position()?;
 
     let index_bytes = encode_to_vec(&index_entries, config)?;
     let index_size = index_bytes.len() as u32;
@@ -1885,7 +1882,7 @@ pub fn build_from_iterators(
     drop(writer);
     file.sync_all()?;
 
-    rename(&tmp_path, &final_path)?;
+    rename(&tmp_path, final_path)?;
 
     Ok(())
 }

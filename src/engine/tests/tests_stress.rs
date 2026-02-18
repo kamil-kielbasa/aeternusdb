@@ -333,6 +333,7 @@ mod tests {
     /// 2. Delete all even-indexed keys.
     /// 3. Re-insert every 4th key (a subset of the deleted even keys) with
     ///    `"resurrected_r{round}_{i}"`.
+    ///
     /// After round 49, get all 200 keys and run a full scan.
     ///
     /// # Expected behavior
@@ -591,6 +592,7 @@ mod tests {
     /// - Resurrected keys: latest value is `"resurrected_{:04}"`.
     /// - Deleted (and not resurrected) keys: `None`.
     /// - Untouched keys: original `"val_{:04}"`.
+    ///
     /// Scan is strictly sorted, count matches oracle, and every key-value
     /// pair is identical.
     #[test]
@@ -1039,6 +1041,7 @@ mod tests {
     /// 2. `flush_all_frozen()`.
     /// 3. Loop `minor_compact()` until `false`.
     /// 4. Verify every oracle key via `get()`.
+    ///
     /// At the end: one `major_compact()`, then final scan verify.
     ///
     /// # Expected behavior

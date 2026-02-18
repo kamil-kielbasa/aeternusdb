@@ -1,0 +1,48 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build docs
+        run: cargo doc --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: "--cfg docsrs"
+
+      - name: Add redirect index page
+        run: echo '<meta http-equiv="refresh" content="0; url=aeternusdb/index.html">' > target/doc/index.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ github.event.repository.html_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

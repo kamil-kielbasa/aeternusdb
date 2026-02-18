@@ -110,7 +110,7 @@ mod tests {
     /// # Expected behavior
     /// - 10 records total: 4 surviving puts + 3 deletes + 3 range deletes.
     ///   (key2 was put then deleted → only the delete survives as the
-    ///    latest version.)
+    ///   latest version.)
     /// - Memtable contents are still readable after flush iteration.
     #[test]
     fn iter_for_flush() {

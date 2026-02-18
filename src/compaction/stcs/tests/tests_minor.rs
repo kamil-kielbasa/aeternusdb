@@ -84,7 +84,7 @@ mod tests {
         // A single minor compaction round on a small bucket should reduce
         // the count by at least 1 (merge ≥ 2 into 1).
         assert!(
-            after.sstables_count <= before.sstables_count - 1,
+            after.sstables_count < before.sstables_count,
             "minor compaction should reduce SSTable count by at least 1: {} → {}",
             before.sstables_count,
             after.sstables_count,

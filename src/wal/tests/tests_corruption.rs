@@ -288,10 +288,10 @@ mod tests {
         f.sync_all().unwrap();
 
         // Replay should read 2 valid records, then hit corruption
-        let mut iter = wal.replay_iter().unwrap();
+        let iter = wal.replay_iter().unwrap();
 
         let mut replayed = vec![];
-        while let Some(res) = iter.next() {
+        for res in iter {
             match res {
                 Ok(record) => replayed.push(record),
                 Err(WalError::ChecksumMismatch) => break,

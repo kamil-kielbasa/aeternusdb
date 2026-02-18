@@ -240,7 +240,7 @@ impl Memtable {
                     inner
                         .tree
                         .entry(key)
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(Reverse(record_value.lsn), record_value);
                 }
 
@@ -266,7 +266,7 @@ impl Memtable {
                     inner
                         .tree
                         .entry(key)
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(Reverse(record_value.lsn), record_value);
                 }
 
@@ -294,7 +294,7 @@ impl Memtable {
                     inner
                         .range_tombstones
                         .entry(record_value.start.clone())
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(Reverse(record_value.lsn), record_value);
                 }
             }
@@ -359,7 +359,7 @@ impl Memtable {
         guard
             .tree
             .entry(key.clone())
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .insert(Reverse(value.lsn), value);
 
         guard.approximate_size += record_size;
@@ -419,7 +419,7 @@ impl Memtable {
         guard
             .tree
             .entry(key.clone())
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .insert(Reverse(value.lsn), value);
 
         guard.approximate_size += record_size;
@@ -486,7 +486,7 @@ impl Memtable {
         guard
             .range_tombstones
             .entry(start.to_vec())
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .insert(Reverse(value.lsn), value);
 
         guard.approximate_size += record_size;

@@ -1,4 +1,10 @@
-//! Engine utilities — shared types and merge primitives.
+//! Engine utilities — shared record types and merge primitives.
+//!
+//! This module defines [`Record`], the unified representation of a point
+//! put, point delete, or range delete used across all engine layers
+//! (memtable, SSTable, compaction, scan), and [`MergeIterator`], a
+//! heap-based k-way merge iterator that combines multiple sorted record
+//! streams into a single globally-sorted stream.
 
 /// Represents a single item emitted by the storage engine.
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -47,6 +53,7 @@ pub enum Record {
 }
 
 impl Record {
+    /// Returns the log sequence number (LSN) of this record.
     pub fn lsn(&self) -> u64 {
         match self {
             Record::Put { lsn, .. } => *lsn,
@@ -55,6 +62,9 @@ impl Record {
         }
     }
 
+    /// Returns the primary key of this record.
+    ///
+    /// For `RangeDelete` records this returns the **start** key of the range.
     pub fn key(&self) -> &Vec<u8> {
         match self {
             Record::Put { key, .. } => key,
@@ -63,6 +73,8 @@ impl Record {
         }
     }
 
+    /// Returns the wall-clock timestamp (nanoseconds since UNIX epoch)
+    /// associated with this record.
     pub fn timestamp(&self) -> u64 {
         match self {
             Record::Put { timestamp, .. } => *timestamp,
@@ -72,6 +84,10 @@ impl Record {
     }
 }
 
+/// Compares two records by `(key ASC, LSN DESC)`.
+///
+/// This ordering ensures that for any given key, the highest-LSN
+/// (most recent) record appears first in a sorted stream.
 pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
     match a.key().cmp(b.key()) {
         std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()),

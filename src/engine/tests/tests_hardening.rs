@@ -1009,7 +1009,7 @@ mod tests {
         // Phase 6: overwrite 'a' to verify it appears with new value
         engine.put(vec![b'a'], b"new_a".to_vec()).unwrap();
 
-        let results = collect_scan(&engine, &[b'a'], &[b'z' + 1]);
+        let results = collect_scan(&engine, b"a", &[b'z' + 1]);
         let keys: Vec<u8> = results.iter().map(|(k, _)| k[0]).collect();
         let map: std::collections::HashMap<u8, Vec<u8>> =
             results.into_iter().map(|(k, v)| (k[0], v)).collect();

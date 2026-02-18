@@ -636,14 +636,14 @@ mod tests {
         assert_eq!(results.len(), 100);
 
         // First 30 should have updated values
-        for i in 0..30 {
+        for (i, result) in results.iter().enumerate().take(30) {
             let expected_val = format!("updated_{:04}", i).into_bytes();
-            assert_eq!(results[i].1, expected_val, "so_{:04} should be updated", i);
+            assert_eq!(result.1, expected_val, "so_{:04} should be updated", i);
         }
         // Rest should have original values
-        for i in 30..100 {
+        for (i, result) in results.iter().enumerate().take(100).skip(30) {
             let expected_val = format!("value_with_some_padding_{:04}", i).into_bytes();
-            assert_eq!(results[i].1, expected_val, "so_{:04} should be original", i);
+            assert_eq!(result.1, expected_val, "so_{:04} should be original", i);
         }
     }
 

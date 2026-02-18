@@ -294,9 +294,9 @@ mod tests {
         );
 
         // Verify sorted order
-        for i in 0..num_entries {
+        for (i, entry) in scanned.iter().enumerate().take(num_entries) {
             let expected_key = format!("key_{:06}", i).into_bytes();
-            match &scanned[i] {
+            match entry {
                 Record::Put { key, .. } => {
                     assert_eq!(key, &expected_key, "Entry {} should be key_{:06}", i, i);
                 }
@@ -330,7 +330,7 @@ mod tests {
         let path = tmp.path().join("sst_truncated.bin");
 
         // Write a file that's too short for any valid SSTable
-        fs::write(&path, &[0u8; 10]).unwrap();
+        fs::write(&path, [0u8; 10]).unwrap();
 
         let result = SSTable::open(&path);
         assert!(result.is_err(), "Opening a truncated SSTable should fail");
