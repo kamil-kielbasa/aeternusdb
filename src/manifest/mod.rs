@@ -122,6 +122,9 @@ pub struct ManifestData {
     /// List of all SSTables belonging to the LSM tree.
     pub sstables: Vec<ManifestSstEntry>,
 
+    /// Next SSTable ID to allocate. Monotonically increasing.
+    pub next_sst_id: u64,
+
     /// Indicates whether the current manifest differs from the recorded snapshot.   
     pub dirty: bool,
 }
@@ -146,6 +149,7 @@ impl Default for ManifestData {
             active_wal: 0,
             frozen_wals: Vec::new(),
             sstables: Vec::new(),
+            next_sst_id: 1,
             dirty: false,
         }
     }
@@ -179,6 +183,16 @@ pub enum ManifestEvent {
 
     /// Updates the global last known LSN.
     UpdateLsn { last_lsn: u64 },
+
+    /// Allocates the next SSTable ID (persists the counter increment).
+    AllocateSstId { id: u64 },
+
+    /// Atomic compaction operation: adds new SSTables and removes old ones
+    /// in a single WAL entry, ensuring crash-safe manifest transitions.
+    Compaction {
+        added: Vec<ManifestSstEntry>,
+        removed: Vec<u64>,
+    },
 }
 
 /// Serialized snapshot stored in `manifest.snapshot`.
@@ -364,6 +378,46 @@ impl Manifest {
     /// Removes SSTable entry by ID.
     pub fn remove_sstable(&mut self, sst_id: u64) -> Result<(), ManifestError> {
         let rec = ManifestEvent::RemoveSst { id: sst_id };
+        self.wal.append(&rec)?;
+        self.apply_record(&rec)?;
+        Ok(())
+    }
+
+    /// Atomically allocates the next SSTable ID.
+    ///
+    /// Increments the manifest's `next_sst_id` counter and persists the
+    /// new value to the WAL. Returns the allocated ID.
+    pub fn allocate_sst_id(&mut self) -> Result<u64, ManifestError> {
+        let id = {
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| ManifestError::Internal("Mutex poisoned".into()))?;
+            data.next_sst_id
+        };
+        let rec = ManifestEvent::AllocateSstId { id };
+        self.wal.append(&rec)?;
+        self.apply_record(&rec)?;
+        Ok(id)
+    }
+
+    /// Returns the next SSTable ID without allocating it.
+    pub fn peek_next_sst_id(&self) -> Result<u64, ManifestError> {
+        let data = self
+            .data
+            .lock()
+            .map_err(|_| ManifestError::Internal("Mutex poisoned".into()))?;
+        Ok(data.next_sst_id)
+    }
+
+    /// Atomically records a compaction: adds new SSTables and removes old ones
+    /// in a single WAL entry.
+    pub fn apply_compaction(
+        &mut self,
+        added: Vec<ManifestSstEntry>,
+        removed: Vec<u64>,
+    ) -> Result<(), ManifestError> {
+        let rec = ManifestEvent::Compaction { added, removed };
         self.wal.append(&rec)?;
         self.apply_record(&rec)?;
         Ok(())
@@ -558,6 +612,32 @@ impl Manifest {
             ManifestEvent::UpdateLsn { last_lsn } => {
                 if *last_lsn > data.last_lsn {
                     data.last_lsn = *last_lsn;
+                }
+                data.dirty = true;
+            }
+
+            ManifestEvent::AllocateSstId { id } => {
+                // Advance counter past the allocated ID (self-healing on replay).
+                if *id >= data.next_sst_id {
+                    data.next_sst_id = *id + 1;
+                }
+                data.dirty = true;
+            }
+
+            ManifestEvent::Compaction { added, removed } => {
+                // Remove old SSTables first.
+                for id in removed {
+                    data.sstables.retain(|e| e.id != *id);
+                }
+                // Add new SSTables (idempotent — skip duplicates).
+                for entry in added {
+                    if !data.sstables.iter().any(|e| e.id == entry.id) {
+                        data.sstables.push(entry.clone());
+                    }
+                    // Keep next_sst_id consistent.
+                    if entry.id >= data.next_sst_id {
+                        data.next_sst_id = entry.id + 1;
+                    }
                 }
                 data.dirty = true;
             }

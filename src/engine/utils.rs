@@ -1,3 +1,5 @@
+//! Engine utilities — shared types and merge primitives.
+
 /// Represents a single item emitted by the storage engine.
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Record {
@@ -74,5 +76,90 @@ pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
     match a.key().cmp(b.key()) {
         std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()),
         other => other,
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// MergeIterator — heap-based k-way merge over Record streams
+// ------------------------------------------------------------------------------------------------
+
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
+/// A heap-based merge iterator that yields [`Record`]s from multiple
+/// sorted sources in `(key ASC, LSN DESC)` order.
+///
+/// Used by both the engine scan path and the compaction module.
+/// The lifetime `'a` bounds any borrowed state inside the source
+/// iterators; pass `'static` when the sources own their data.
+pub struct MergeIterator<'a> {
+    iters: Vec<Box<dyn Iterator<Item = Record> + 'a>>,
+    heap: BinaryHeap<MergeHeapEntry<'a>>,
+}
+
+struct MergeHeapEntry<'a> {
+    record: Record,
+    source_idx: usize,
+    /// Marker so the struct is invariant over `'a` without storing a
+    /// reference — the actual borrowed data lives inside the iterator.
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl Ord for MergeHeapEntry<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Min-heap: reverse so smallest key / highest LSN pops first.
+        record_cmp(&self.record, &other.record).reverse()
+    }
+}
+
+impl PartialOrd for MergeHeapEntry<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for MergeHeapEntry<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.record.lsn() == other.record.lsn() && self.record.key() == other.record.key()
+    }
+}
+
+impl Eq for MergeHeapEntry<'_> {}
+
+impl<'a> MergeIterator<'a> {
+    pub fn new(mut iters: Vec<Box<dyn Iterator<Item = Record> + 'a>>) -> Self {
+        let mut heap = BinaryHeap::new();
+
+        for (idx, iter) in iters.iter_mut().enumerate() {
+            if let Some(record) = iter.next() {
+                heap.push(MergeHeapEntry {
+                    record,
+                    source_idx: idx,
+                    _marker: std::marker::PhantomData,
+                });
+            }
+        }
+
+        Self { iters, heap }
+    }
+}
+
+impl Iterator for MergeIterator<'_> {
+    type Item = Record;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = self.heap.pop()?;
+        let result = entry.record;
+        let idx = entry.source_idx;
+
+        if let Some(next_record) = self.iters[idx].next() {
+            self.heap.push(MergeHeapEntry {
+                record: next_record,
+                source_idx: idx,
+                _marker: std::marker::PhantomData,
+            });
+        }
+
+        Some(result)
     }
 }

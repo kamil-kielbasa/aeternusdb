@@ -547,8 +547,9 @@ mod tests {
         engine.put(b"k".to_vec(), b"v".to_vec()).unwrap();
         engine.close().unwrap();
 
-        // Create an orphan file matching the cleanup pattern (sst-*.sst)
-        let orphan_path = dir.path().join("sst-999.sst");
+        // Create an orphan file matching the cleanup pattern (sstable-*.sst)
+        // in the sstables/ subdirectory where the engine actually scans
+        let orphan_path = dir.path().join("sstables/sstable-999.sst");
         std::fs::write(&orphan_path, b"orphan data").unwrap();
         assert!(
             orphan_path.exists(),
@@ -559,7 +560,7 @@ mod tests {
         let engine = Engine::open(dir.path(), default_config()).unwrap();
         assert!(
             !orphan_path.exists(),
-            "orphan sst-*.sst file should be removed on open"
+            "orphan sstable-*.sst file should be removed on open"
         );
 
         // Original data should still work
@@ -567,11 +568,11 @@ mod tests {
     }
 
     /// # Scenario
-    /// Files that do NOT match the orphan pattern (`sst-*.sst`) are preserved.
+    /// Files that do NOT match the orphan pattern (`sstable-*.sst`) are preserved.
     ///
     /// # Starting environment
     /// Engine opened and closed. A file named `notes.sst` (does not have
-    /// the `sst-` prefix) is created in the data directory.
+    /// the `sstable-` prefix) is created in the sstables directory.
     ///
     /// # Actions
     /// 1. Reopen the engine.
@@ -579,7 +580,7 @@ mod tests {
     ///
     /// # Expected behavior
     /// `notes.sst` is preserved — the orphan cleanup only targets files
-    /// matching the `sst-*.sst` naming pattern.
+    /// matching the `sstable-*.sst` naming pattern.
     #[test]
     fn memtable_sstable__non_orphan_sst_preserved() {
         let dir = TempDir::new().unwrap();
@@ -588,8 +589,8 @@ mod tests {
         engine.put(b"k".to_vec(), b"v".to_vec()).unwrap();
         engine.close().unwrap();
 
-        // File that does NOT match pattern (no "sst-" prefix)
-        let safe_path = dir.path().join("notes.sst");
+        // File that does NOT match pattern (no "sstable-" prefix)
+        let safe_path = dir.path().join("sstables/notes.sst");
         std::fs::write(&safe_path, b"not an orphan").unwrap();
 
         let _engine = Engine::open(dir.path(), default_config()).unwrap();
@@ -685,13 +686,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config = EngineConfig {
             write_buffer_size: 64,
+            compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
             bucket_low: 0.5,
             bucket_high: 1.5,
             min_sstable_size: 1024,
             min_threshold: 4,
             max_threshold: 32,
-            tombstone_threshold: 0.2,
+            tombstone_ratio_threshold: 0.2,
             tombstone_compaction_interval: 3600,
+            tombstone_bloom_fallback: false,
+            tombstone_range_drop: false,
             thread_pool_size: 2,
         };
 
@@ -751,13 +755,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config = EngineConfig {
             write_buffer_size: 64,
+            compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
             bucket_low: 0.5,
             bucket_high: 1.5,
             min_sstable_size: 1024,
             min_threshold: 4,
             max_threshold: 32,
-            tombstone_threshold: 0.2,
+            tombstone_ratio_threshold: 0.2,
             tombstone_compaction_interval: 3600,
+            tombstone_bloom_fallback: false,
+            tombstone_range_drop: false,
             thread_pool_size: 2,
         };
 
@@ -794,13 +801,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config = EngineConfig {
             write_buffer_size: 64,
+            compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
             bucket_low: 0.5,
             bucket_high: 1.5,
             min_sstable_size: 1024,
             min_threshold: 4,
             max_threshold: 32,
-            tombstone_threshold: 0.2,
+            tombstone_ratio_threshold: 0.2,
             tombstone_compaction_interval: 3600,
+            tombstone_bloom_fallback: false,
+            tombstone_range_drop: false,
             thread_pool_size: 2,
         };
 

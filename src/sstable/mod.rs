@@ -503,6 +503,10 @@ impl SSTGetResult {
 
 /// A fully memory-mapped, immutable **Sorted String Table (SSTable)**.
 pub struct SSTable {
+    /// Unique identifier assigned by the engine (from the manifest).
+    /// Set to 0 by `SSTable::open()` — the engine sets the correct value after loading.
+    pub id: u64,
+
     /// Memory-mapped file containing the full SSTable bytes.
     pub mmap: Mmap,
 
@@ -530,6 +534,39 @@ pub struct SSTable {
 // ------------------------------------------------------------------------------------------------
 
 impl SSTable {
+    /// Returns the on-disk file size of this SSTable in bytes.
+    pub fn file_size(&self) -> u64 {
+        self.footer.total_file_size
+    }
+
+    /// Checks whether `key` *might* exist in this SSTable according to the
+    /// bloom filter.
+    ///
+    /// Returns `true` if the bloom says "maybe present" or no bloom exists.
+    /// Returns `false` only when the bloom definitively says "not present".
+    pub fn bloom_may_contain(&self, key: &[u8]) -> bool {
+        if self.bloom.data.is_empty() {
+            return true; // no bloom → cannot exclude
+        }
+        match Bloom::from_slice(&self.bloom.data) {
+            Ok(bloom) => bloom.check(key),
+            Err(_) => true, // corrupted bloom → assume present
+        }
+    }
+
+    /// Returns an iterator over the range tombstones stored in this SSTable,
+    /// yielding `(start_key, end_key, lsn, timestamp)` tuples.
+    pub fn range_tombstone_iter(&self) -> impl Iterator<Item = (&[u8], &[u8], u64, u64)> {
+        self.range_deletes.data.iter().map(|rd| {
+            (
+                rd.start_key.as_slice(),
+                rd.end_key.as_slice(),
+                rd.lsn,
+                rd.timestamp,
+            )
+        })
+    }
+
     /// Opens an SSTable from disk, verifies its integrity, and loads all top-level
     /// metadata structures.
     ///
@@ -684,6 +721,7 @@ impl SSTable {
             decode_from_slice::<Vec<SSTableIndexEntry>, _>(&index_bytes, config)?;
 
         Ok(Self {
+            id: 0,
             mmap,
             header,
             bloom,
@@ -901,7 +939,7 @@ impl SSTable {
         &self,
         start_key: &[u8],
         end_key: &[u8],
-    ) -> Result<impl Iterator<Item = Record>, SSTableError> {
+    ) -> Result<impl Iterator<Item = Record> + use<'_>, SSTableError> {
         SSTableScanIterator::new(self, start_key.to_vec(), end_key.to_vec())
     }
 

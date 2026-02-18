@@ -1,9 +1,55 @@
-//! LSM Engine API (spec & pseudocode)
+//! # LSM Storage Engine
 //!
+//! This module implements a **synchronous**, **crash-safe** LSM-tree storage engine
+//! with multi-version concurrency, point and range tombstones, and pluggable
+//! compaction strategies.
 //!
+//! ## Design Overview
+//!
+//! The engine organises data across three layers, queried newest-first:
+//!
+//! 1. **Active memtable** — an in-memory sorted map backed by a write-ahead log (WAL).
+//! 2. **Frozen memtables** — read-only snapshots of previously active memtables,
+//!    awaiting flush to persistent SSTables.
+//! 3. **SSTables** — immutable, sorted, on-disk files with bloom filters and block
+//!    indices for efficient point lookups and range scans.
+//!
+//! Writes go through the WAL first, then into the active memtable. When the
+//! memtable exceeds [`EngineConfig::write_buffer_size`] it is frozen and a
+//! fresh memtable + WAL is created. Frozen memtables are flushed to SSTables
+//! via [`Engine::flush_oldest_frozen`] / [`Engine::flush_all_frozen`].
+//!
+//! ## Concurrency Model
+//!
+//! All engine state is protected by a single `Arc<RwLock<EngineInner>>`.
+//! Reads acquire a **read lock**; writes and flushes acquire a **write lock**.
+//! Compaction first acquires a short read lock to obtain the strategy, then
+//! acquires a write lock for the merge/swap phase.
+//!
+//! ## Compaction
+//!
+//! Three compaction operations are exposed:
+//!
+//! - [`Engine::minor_compact`] — merges similarly-sized SSTables within a
+//!   bucket, deduplicating point entries while preserving tombstones.
+//! - [`Engine::tombstone_compact`] — rewrites a single high-tombstone-ratio
+//!   SSTable, dropping provably-unnecessary tombstones.
+//! - [`Engine::major_compact`] — merges *all* SSTables into one, actively
+//!   applying range tombstones and dropping all spent tombstones.
+//!
+//! The concrete strategy implementations are selected via
+//! [`EngineConfig::compaction_strategy`].
+//!
+//! ## Guarantees
+//!
+//! - **Durability:** Every write is persisted to WAL before acknowledgement.
+//! - **Crash recovery:** On [`Engine::open`], the manifest, WALs, and SSTables
+//!   are replayed to reconstruct the last durable state.
+//! - **Multi-version reads:** Point lookups and scans always see the latest
+//!   committed version of each key, respecting tombstones.
+//! - **Atomic flushes:** Each frozen memtable is flushed to a single SSTable
+//!   and the manifest is updated atomically.
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -24,6 +70,7 @@ pub const MANIFEST_DIR: &str = "manifest";
 pub const MEMTABLE_DIR: &str = "memtables";
 pub const SSTABLE_DIR: &str = "sstables";
 
+/// Errors that can occur during engine operations.
 #[derive(Debug, Error)]
 pub enum EngineError {
     #[error("Manifest error: {0}")]
@@ -42,38 +89,65 @@ pub enum EngineError {
     Internal(String),
 }
 
+/// Configuration for an [`Engine`] instance.
+///
+/// Controls memtable sizing, compaction strategy selection, and all
+/// compaction-related thresholds. Passed to [`Engine::open`].
 pub struct EngineConfig {
-    /// max memtable size (MB) before flush; threshold for oversized records.
+    /// Max memtable size (bytes) before freeze.
     pub write_buffer_size: usize,
 
-    /// Lower bound multiplier for bucket size range ([avg × bucket_low, avg × bucket_high])
+    /// Compaction strategy to use for this engine instance.
+    ///
+    /// Determines which [`CompactionStrategy`](crate::compaction::CompactionStrategy)
+    /// implementations back the `minor_compact`, `tombstone_compact`, and
+    /// `major_compact` methods.
+    pub compaction_strategy: crate::compaction::CompactionStrategyType,
+
+    /// Lower bound multiplier for bucket size range ([avg × bucket_low, avg × bucket_high]).
     pub bucket_low: f64,
 
     /// Upper bound multiplier for bucket size range.
     pub bucket_high: f64,
 
-    /// Min size (MB) for regular buckets; smaller go to "small" bucket.
+    /// Min size (bytes) for regular buckets; smaller SSTables go to the "small" bucket.
     pub min_sstable_size: usize,
 
-    /// Min SSTables in bucket for minor compaction.
+    /// Min SSTables in a bucket to trigger minor compaction.
     pub min_threshold: usize,
 
-    /// Max SSTables per minor compaction.
+    /// Max SSTables to compact at once in minor compaction.
     pub max_threshold: usize,
 
-    /// Ratio of droppable tombstones to trigger tombstone compaction.
-    pub tombstone_threshold: f64,
+    /// Ratio of tombstones to total records to trigger tombstone compaction.
+    pub tombstone_ratio_threshold: f64,
 
-    /// Min SSTable age (seconds) for tombstone compaction.
+    /// Min SSTable age (seconds) before eligible for tombstone compaction.
     pub tombstone_compaction_interval: usize,
 
-    /// Thread pool for flushing memtables and compcations.
+    /// When true, tombstone compaction resolves bloom filter false positives
+    /// by doing an actual `get()` on other SSTables for point tombstones.
+    pub tombstone_bloom_fallback: bool,
+
+    /// When true, tombstone compaction will scan older SSTables to check
+    /// whether a range tombstone still covers any live keys, allowing
+    /// aggressive range tombstone removal.
+    pub tombstone_range_drop: bool,
+
+    /// Thread pool size for flushing memtables and compactions.
     pub thread_pool_size: usize,
 }
 
+/// Snapshot of engine statistics returned by [`Engine::stats`].
 pub struct EngineStats {
+    /// Number of frozen memtables pending flush.
     pub frozen_count: usize,
+    /// Total number of SSTables on disk.
     pub sstables_count: usize,
+    /// Sum of all SSTable file sizes in bytes.
+    pub total_sst_size_bytes: u64,
+    /// Per-SSTable file sizes in bytes (newest-first order).
+    pub sst_sizes: Vec<u64>,
 }
 
 struct EngineInner {
@@ -97,11 +171,20 @@ struct EngineInner {
     config: EngineConfig,
 }
 
+/// The main LSM storage engine handle.
+///
+/// Thread-safe — can be cloned and shared across threads via the
+/// internal `Arc<RwLock<_>>`.
 pub struct Engine {
     inner: Arc<RwLock<EngineInner>>,
 }
 
 impl Engine {
+    /// Opens (or creates) an engine rooted at the given directory.
+    ///
+    /// On a fresh directory the manifest, WAL, and SSTable sub-directories
+    /// are created automatically. On an existing directory the manifest is
+    /// replayed, frozen WALs are loaded, and SSTables are opened.
     pub fn open(path: impl AsRef<Path>, config: EngineConfig) -> Result<Self, EngineError> {
         // 0. Create necessary directories
         let path_str = path.as_ref().to_string_lossy();
@@ -141,10 +224,10 @@ impl Engine {
             frozen_memtables.push(memtable.frozen()?);
         }
 
-        // 3. Diccover existing SSTables on disk and remove orphans.
+        // 3. Discover existing SSTables on disk and remove orphans.
         let sstables = manifest.get_sstables()?;
 
-        for entry in fs::read_dir(&path)? {
+        for entry in fs::read_dir(&sstable_dir)? {
             let entry = entry?;
             let file_path = entry.path();
 
@@ -152,7 +235,7 @@ impl Engine {
             {
                 if let Some(file_name) = file_path.file_name().and_then(|s| s.to_str()) {
                     if let Some(id) = file_name
-                        .strip_prefix("sst-")
+                        .strip_prefix("sstable-")
                         .and_then(|s| s.strip_suffix(".sst"))
                         .and_then(|s| s.parse::<u64>().ok())
                     {
@@ -167,7 +250,8 @@ impl Engine {
         // 4. Load SSTables from manifest.
         let mut sstable_handles = Vec::new();
         for sstable_entry in sstables {
-            let sstable = SSTable::open(&sstable_entry.path)?;
+            let mut sstable = SSTable::open(&sstable_entry.path)?;
+            sstable.id = sstable_entry.id;
             sstable_handles.push(sstable);
         }
 
@@ -206,12 +290,10 @@ impl Engine {
                 .cmp(&a.memtable.wal.header.wal_seq)
         });
 
-        // Sort sstables by creation timestamp, newest first
-        sstable_handles.sort_by(|a, b| {
-            b.properties
-                .creation_timestamp
-                .cmp(&a.properties.creation_timestamp)
-        });
+        // Sort SSTables by max_lsn descending.  This lets get()
+        // early-terminate: once we find a result at LSN L, any SSTable
+        // whose max_lsn ≤ L cannot contain a newer version of any key.
+        sstable_handles.sort_by(|a, b| b.properties.max_lsn.cmp(&a.properties.max_lsn));
 
         let inner = EngineInner {
             manifest,
@@ -227,6 +309,10 @@ impl Engine {
         })
     }
 
+    /// Gracefully shuts down the engine.
+    ///
+    /// Flushes all remaining frozen memtables, checkpoints the manifest,
+    /// and fsyncs all directories to ensure full durability.
     pub fn close(&self) -> Result<(), EngineError> {
         let mut inner = self
             .inner
@@ -345,6 +431,13 @@ impl Engine {
         }
     }
 
+    /// Look up a single key.
+    ///
+    /// Returns `Ok(Some(value))` if the key exists, `Ok(None)` if it has
+    /// been deleted or was never written, or `Err` on I/O failure.
+    ///
+    /// The lookup order is: active memtable → frozen memtables → SSTables
+    /// (all newest-first). The first definitive result wins.
     pub fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, EngineError> {
         let inner = self
             .inner
@@ -374,23 +467,50 @@ impl Engine {
         }
 
         // --------------------------------------------------
-        // 3. SSTables (newest → oldest)
+        // 3. SSTables (sorted by max_lsn descending)
+        //
+        //    After size-tiered compaction, a merged SSTable may
+        //    span a wide LSN range. We track the best (highest-LSN)
+        //    result found so far. Once an SSTable's max_lsn is ≤
+        //    the best LSN, no subsequent SSTable can beat it, so
+        //    we break early.
         // --------------------------------------------------
-        for sstable in &inner.sstables {
-            match sstable.get(&key)? {
-                sstable::SSTGetResult::Put { value, .. } => return Ok(Some(value)),
-                sstable::SSTGetResult::Delete { .. }
-                | sstable::SSTGetResult::RangeDelete { .. } => return Ok(None),
+        let mut best_sst: Option<sstable::SSTGetResult> = None;
+        let mut best_lsn: u64 = 0;
+
+        for sst in &inner.sstables {
+            // Early termination: this SSTable (and all after it) have
+            // max_lsn ≤ best_lsn, so they can't contain a newer version.
+            if sst.properties.max_lsn <= best_lsn {
+                break;
+            }
+
+            match sst.get(&key)? {
                 sstable::SSTGetResult::NotFound => {}
+                result => {
+                    let lsn = result.lsn();
+                    if lsn > best_lsn {
+                        best_lsn = lsn;
+                        best_sst = Some(result);
+                    }
+                }
             }
         }
 
-        // --------------------------------------------------
-        // 4. Not found anywhere
-        // --------------------------------------------------
-        Ok(None)
+        match best_sst {
+            Some(sstable::SSTGetResult::Put { value, .. }) => Ok(Some(value)),
+            Some(
+                sstable::SSTGetResult::Delete { .. } | sstable::SSTGetResult::RangeDelete { .. },
+            ) => Ok(None),
+            _ => Ok(None),
+        }
     }
 
+    /// Scan all live key-value pairs in `[start_key, end_key)`.
+    ///
+    /// Returns an iterator of `(key, value)` pairs, merging entries from
+    /// all layers and applying point/range tombstones to filter out
+    /// deleted keys.
     pub fn scan(
         &self,
         start_key: &[u8],
@@ -404,7 +524,7 @@ impl Engine {
         &self,
         start_key: &[u8],
         end_key: &[u8],
-    ) -> Result<EngineScanIterator, EngineError> {
+    ) -> Result<utils::MergeIterator<'static>, EngineError> {
         let inner = self
             .inner
             .read()
@@ -428,18 +548,27 @@ impl Engine {
             iters.push(Box::new(records.into_iter()));
         }
 
-        Ok(EngineScanIterator::new(iters))
+        Ok(utils::MergeIterator::new(iters))
     }
 
+    /// Returns a snapshot of engine statistics.
+    ///
+    /// Includes frozen memtable count, SSTable count, per-SSTable file
+    /// sizes, and total on-disk SSTable size.
     pub fn stats(&self) -> Result<EngineStats, EngineError> {
         let inner = self
             .inner
             .read()
             .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
 
+        let sst_sizes: Vec<u64> = inner.sstables.iter().map(|s| s.file_size()).collect();
+        let total_sst_size_bytes: u64 = sst_sizes.iter().sum();
+
         Ok(EngineStats {
             frozen_count: inner.frozen.len(),
             sstables_count: inner.sstables.len(),
+            total_sst_size_bytes,
+            sst_sizes,
         })
     }
 
@@ -507,6 +636,11 @@ impl Engine {
         Ok(count)
     }
 
+    /// Allocates the next unique SSTable ID from the manifest's monotonic counter.
+    fn next_sstable_id(inner: &mut EngineInner) -> Result<u64, EngineError> {
+        Ok(inner.manifest.allocate_sst_id()?)
+    }
+
     fn flush_frozen_to_sstable_inner(inner: &mut EngineInner) -> Result<(), EngineError> {
         if inner.frozen.is_empty() {
             return Ok(());
@@ -568,25 +702,8 @@ impl Engine {
             }
         }
 
-        // Generate unique SSTable ID by finding max ID from existing SSTable files
-        let mut max_id = 0u64;
-        let sstable_dir = format!("{}/{}", inner.data_dir, SSTABLE_DIR);
-
-        if let Ok(entries) = fs::read_dir(&sstable_dir) {
-            for entry in entries.flatten() {
-                if let Some(file_name) = entry.file_name().to_str() {
-                    if let Some(id) = file_name
-                        .strip_prefix("sstable-")
-                        .and_then(|s| s.strip_suffix(".sst"))
-                        .and_then(|s| s.parse::<u64>().ok())
-                    {
-                        max_id = max_id.max(id);
-                    }
-                }
-            }
-        }
-
-        let sstable_id = max_id + 1;
+        // Generate unique SSTable ID and path
+        let sstable_id = Self::next_sstable_id(inner)?;
         let sstable_path = format!(
             "{}/{}/sstable-{}.sst",
             inner.data_dir, SSTABLE_DIR, sstable_id
@@ -605,7 +722,8 @@ impl Engine {
         )?;
 
         // Load the newly created SSTable
-        let sstable = SSTable::open(&sstable_path)?;
+        let mut sstable = SSTable::open(&sstable_path)?;
+        sstable.id = sstable_id;
         // Insert at beginning to maintain sorted order (newest first)
         inner.sstables.insert(0, sstable);
 
@@ -621,78 +739,141 @@ impl Engine {
         Ok(())
     }
 
-    fn trigger_compcation(&self) -> Result<(), EngineError> {
-        unimplemented!()
-    }
-}
+    // --------------------------------------------------------------------------------------------
+    // Compaction API
+    // --------------------------------------------------------------------------------------------
 
-pub struct EngineScanIterator {
-    iters: Vec<Box<dyn Iterator<Item = Record>>>,
-    heap: BinaryHeap<ScanHeapEntry>,
-}
+    /// Execute a compaction strategy, applying the result to the engine.
+    ///
+    /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if
+    /// the strategy decided there was nothing to do.
+    fn run_compaction(
+        &self,
+        strategy: &dyn crate::compaction::CompactionStrategy,
+    ) -> Result<bool, EngineError> {
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
 
-struct ScanHeapEntry {
-    record: Record,
-    source_idx: usize,
-}
+        let inner = &mut *inner; // reborrow to split fields
+        let sst_count = inner.sstables.len();
+        let result = strategy
+            .compact(
+                &inner.sstables,
+                &mut inner.manifest,
+                &inner.data_dir,
+                &inner.config,
+            )
+            .map_err(|e| EngineError::Internal(format!("Compaction failed: {e}")))?;
 
-impl Ord for ScanHeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // We want the heap to be a min-heap based on key and LSN, so we reverse the order
-        utils::record_cmp(&self.record, &other.record).reverse()
-    }
-}
-
-impl PartialOrd for ScanHeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for ScanHeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.record.lsn() == other.record.lsn() && self.record.key() == other.record.key()
-    }
-}
-
-impl Eq for ScanHeapEntry {}
-
-impl EngineScanIterator {
-    pub fn new(mut iters: Vec<Box<dyn Iterator<Item = Record>>>) -> Self {
-        let mut heap = BinaryHeap::new();
-
-        for (idx, iter) in iters.iter_mut().enumerate() {
-            if let Some(record) = iter.next() {
-                heap.push(ScanHeapEntry {
-                    record,
-                    source_idx: idx,
-                });
+        match result {
+            None => {
+                tracing::debug!(sst_count, "compaction strategy found nothing to do");
+                Ok(false)
+            }
+            Some(cr) => {
+                tracing::info!(
+                    sst_count_before = sst_count,
+                    removed = cr.removed_ids.len(),
+                    new_id = ?cr.new_sst_id,
+                    "compaction applied"
+                );
+                Self::apply_compaction_result(inner, cr)?;
+                Ok(true)
             }
         }
-
-        Self { iters, heap }
     }
-}
 
-impl Iterator for EngineScanIterator {
-    type Item = Record;
+    /// Runs one round of **minor compaction** (size-tiered).
+    ///
+    /// Selects the best bucket whose size exceeds `min_threshold` and merges
+    /// those SSTables into a single new SSTable, deduplicating point entries
+    /// and preserving all tombstones.
+    ///
+    /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if no
+    /// bucket met the threshold.
+    pub fn minor_compact(&self) -> Result<bool, EngineError> {
+        let strategy = {
+            let inner = self
+                .inner
+                .read()
+                .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+            inner.config.compaction_strategy.minor()
+        };
+        self.run_compaction(strategy.as_ref())
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let item = self.heap.pop()?;
+    /// Runs one round of **tombstone compaction** (per-SSTable GC).
+    ///
+    /// Selects the SSTable with the highest tombstone ratio that exceeds
+    /// `tombstone_ratio_threshold` and rewrites it, dropping provably-unnecessary
+    /// tombstones.
+    ///
+    /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if no
+    /// SSTable was eligible.
+    pub fn tombstone_compact(&self) -> Result<bool, EngineError> {
+        let strategy = {
+            let inner = self
+                .inner
+                .read()
+                .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+            inner.config.compaction_strategy.tombstone()
+        };
+        self.run_compaction(strategy.as_ref())
+    }
 
-        let result = item.record;
-        let idx = item.source_idx;
+    /// Runs **major compaction** — merges all SSTables into one.
+    ///
+    /// Actively applies range tombstones to suppress covered Puts, and
+    /// drops all spent tombstones from the output.
+    ///
+    /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if
+    /// there are fewer than 2 SSTables.
+    pub fn major_compact(&self) -> Result<bool, EngineError> {
+        let strategy = {
+            let inner = self
+                .inner
+                .read()
+                .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+            inner.config.compaction_strategy.major()
+        };
+        self.run_compaction(strategy.as_ref())
+    }
 
-        if let Some(next_record) = self.iters[idx].next() {
-            self.heap.push(ScanHeapEntry {
-                record: next_record,
-                source_idx: idx,
-            });
+    /// Applies a `CompactionResult` to the in-memory engine state.
+    ///
+    /// Removes consumed SSTables, inserts the newly built one, and
+    /// re-sorts by `max_lsn` descending so that `get()` can
+    /// early-terminate correctly.
+    fn apply_compaction_result(
+        inner: &mut EngineInner,
+        cr: crate::compaction::CompactionResult,
+    ) -> Result<(), EngineError> {
+        // Remove consumed SSTables.
+        inner
+            .sstables
+            .retain(|sst| !cr.removed_ids.contains(&sst.id));
+
+        // Load and insert new SSTable if one was produced.
+        if let Some(ref path) = cr.new_sst_path {
+            let mut new_sst = SSTable::open(path)?;
+            new_sst.id = cr.new_sst_id.unwrap_or(0);
+            inner.sstables.push(new_sst);
         }
 
-        Some(result)
+        // Re-sort by max_lsn descending to maintain the early-termination
+        // invariant used by get().
+        inner
+            .sstables
+            .sort_by(|a, b| b.properties.max_lsn.cmp(&a.properties.max_lsn));
+
+        Ok(())
     }
 }
+
+/// Type alias preserving the public scan iterator name.
+pub type EngineScanIterator = utils::MergeIterator<'static>;
 
 pub struct VisibilityFilter<I>
 where

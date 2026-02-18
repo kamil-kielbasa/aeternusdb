@@ -464,13 +464,16 @@ mod tests {
         // Use a 16 KB buffer so the single 8 KB key fits in one memtable
         let config = EngineConfig {
             write_buffer_size: 16 * 1024,
+            compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
             bucket_low: 0.5,
             bucket_high: 1.5,
             min_sstable_size: 1024,
             min_threshold: 4,
             max_threshold: 32,
-            tombstone_threshold: 0.2,
+            tombstone_ratio_threshold: 0.2,
             tombstone_compaction_interval: 3600,
+            tombstone_bloom_fallback: false,
+            tombstone_range_drop: false,
             thread_pool_size: 2,
         };
 
