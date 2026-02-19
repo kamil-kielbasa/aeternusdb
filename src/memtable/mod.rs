@@ -109,7 +109,7 @@ pub struct Memtable {
 /// The highest-LSN entry is considered the latest.
 ///
 /// Deletions are represented by tombstones (`is_delete = true`).
-#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MemtableSingleEntry {
     /// The stored value. `None` indicates a deletion (tombstone).
     pub value: Option<Vec<u8>>,
@@ -122,6 +122,37 @@ pub struct MemtableSingleEntry {
 
     /// Log sequence number for ordering updates.
     pub lsn: u64,
+}
+
+impl crate::encoding::Encode for MemtableSingleEntry {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), crate::encoding::EncodingError> {
+        crate::encoding::Encode::encode_to(&self.value, buf)?;
+        crate::encoding::Encode::encode_to(&self.timestamp, buf)?;
+        crate::encoding::Encode::encode_to(&self.is_delete, buf)?;
+        crate::encoding::Encode::encode_to(&self.lsn, buf)?;
+        Ok(())
+    }
+}
+
+impl crate::encoding::Decode for MemtableSingleEntry {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), crate::encoding::EncodingError> {
+        let (value, mut offset) = <Option<Vec<u8>> as crate::encoding::Decode>::decode_from(buf)?;
+        let (timestamp, n) = <u64 as crate::encoding::Decode>::decode_from(&buf[offset..])?;
+        offset += n;
+        let (is_delete, n) = <bool as crate::encoding::Decode>::decode_from(&buf[offset..])?;
+        offset += n;
+        let (lsn, n) = <u64 as crate::encoding::Decode>::decode_from(&buf[offset..])?;
+        offset += n;
+        Ok((
+            MemtableSingleEntry {
+                value,
+                timestamp,
+                is_delete,
+                lsn,
+            },
+            offset,
+        ))
+    }
 }
 
 use crate::engine::RangeTombstone;

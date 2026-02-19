@@ -8,7 +8,6 @@ readme = "README.md"
 repository = "https://github.com/kamil-kielbasa/aeternusdb"
 
 [dependencies]
-bincode = "2.0.1"
 bloomfilter = "3.0.1"
 crc32fast = "1.5.0"
 crossbeam = "0.8.4"

@@ -8,7 +8,7 @@
 //! //! ## Design Overview
 //!
 //! The WAL ensures crash recovery and corruption detection for any serializable record type
-//! (`MemTableRecord`, `ManifestRecord`, etc.). It uses [`bincode`] for compact serialization
+//! (`MemTableRecord`, `ManifestRecord`, etc.). It uses [`crate::encoding`] for compact serialization
 //! and [`crc32fast`] for data integrity.
 //!
 //! Each record is appended sequentially to disk with atomic file syncs to ensure durability.
@@ -26,7 +26,7 @@
 //! - **Header** — a [`WalHeader`] structure followed by a 4-byte CRC32 checksum.
 //! - **Record** — consists of:
 //!   - 4-byte little-endian length prefix
-//!   - serialized record bytes (`bincode` format)
+//!   - serialized record bytes (custom encoding format)
 //!   - 4-byte CRC32 checksum computed over `len || record_bytes`
 //!
 //! # Concurrency model
@@ -42,7 +42,7 @@
 //! - **Durability:** Every `append()` is followed by an `fsync()` via [`File::sync_all`].  
 //! - **Integrity:** Both header and record checksums are verified during replay.  
 //! - **Corruption detection:** Replay stops at first failed checksum or truncated write.  
-//! - **Safety:** Thread-safe, generic over any [`bincode`] `Encode`/`Decode` type.
+//! - **Safety:** Thread-safe, generic over any [`crate::encoding`] `Encode`/`Decode` type.
 
 // ------------------------------------------------------------------------------------------------
 // Unit tests
@@ -62,7 +62,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bincode::{config::standard, decode_from_slice, encode_to_vec};
+use crate::encoding::{self, EncodingError};
 use crc32fast::Hasher as Crc32;
 use std::ffi::OsStr;
 use thiserror::Error;
@@ -81,13 +81,9 @@ pub enum WalError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// Serialization error.
-    #[error("Serialization (encode) error: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
-
-    /// Deserialization error.
-    #[error("Deserialization (decode) error: {0}")]
-    Decode(#[from] bincode::error::DecodeError),
+    /// Encoding / decoding error.
+    #[error("Encoding error: {0}")]
+    Encoding(#[from] EncodingError),
 
     /// Data integrity failure — checksum did not match.
     #[error("Checksum mismatch")]
@@ -118,7 +114,7 @@ pub enum WalError {
 ///
 /// This section validates the WAL’s identity and constraints.
 /// It is followed by a CRC32 checksum to protect against corruption.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug)]
 pub struct WalHeader {
     /// Magic constant to identify WAL files (`b"AWAL"`).
     pub magic: [u8; 4],
@@ -157,6 +153,39 @@ impl WalHeader {
     }
 }
 
+impl encoding::Encode for WalHeader {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.magic, buf)?;
+        encoding::Encode::encode_to(&self.version, buf)?;
+        encoding::Encode::encode_to(&self.max_record_size, buf)?;
+        encoding::Encode::encode_to(&self.wal_seq, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for WalHeader {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut offset = 0;
+        let (magic, n) = <[u8; 4]>::decode_from(&buf[offset..])?;
+        offset += n;
+        let (version, n) = u32::decode_from(&buf[offset..])?;
+        offset += n;
+        let (max_record_size, n) = u32::decode_from(&buf[offset..])?;
+        offset += n;
+        let (wal_seq, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        Ok((
+            Self {
+                magic,
+                version,
+                max_record_size,
+                wal_seq,
+            },
+            offset,
+        ))
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // Traits
 // ------------------------------------------------------------------------------------------------
@@ -164,14 +193,14 @@ impl WalHeader {
 /// Trait for data types that can be written to and read from the WAL.
 ///
 /// Any record type used with [`Wal`] must implement this trait,
-/// which acts as a marker requiring [`bincode`] serialization.
+/// which acts as a marker requiring [`crate::encoding`] serialization.
 ///
 /// # Required Traits
-/// - [`bincode::Encode`]
-/// - [`bincode::Decode`]
+/// - [`crate::encoding::Encode`]
+/// - [`crate::encoding::Decode`]
 /// - [`Send`] + [`Sync`] + [`Debug`]
-pub trait WalData: bincode::Encode + bincode::Decode<()> + std::fmt::Debug + Send + Sync {}
-impl<T> WalData for T where T: bincode::Encode + bincode::Decode<()> + std::fmt::Debug + Send + Sync {}
+pub trait WalData: encoding::Encode + encoding::Decode + std::fmt::Debug + Send + Sync {}
+impl<T> WalData for T where T: encoding::Encode + encoding::Decode + std::fmt::Debug + Send + Sync {}
 
 // ------------------------------------------------------------------------------------------------
 // WAL Core
@@ -217,8 +246,6 @@ impl<T: WalData> Wal<T> {
             .append(true)
             .open(path_ref)?;
 
-        let config = standard().with_fixed_int_encoding();
-
         let wal_seq = Self::parse_seq_from_path(path_ref)
             .ok_or(WalError::Internal("WAL name incorrect".into()))?;
 
@@ -229,7 +256,7 @@ impl<T: WalData> Wal<T> {
                 wal_seq,
             );
 
-            let header_bytes = encode_to_vec(&header, config).map_err(WalError::Encode)?;
+            let header_bytes = encoding::encode_to_vec(&header)?;
 
             let mut hasher = Crc32::new();
             hasher.update(&header_bytes);
@@ -247,7 +274,7 @@ impl<T: WalData> Wal<T> {
             file.seek(SeekFrom::Start(0))?;
 
             let sample = WalHeader::new(WalHeader::DEFAULT_MAX_RECORD_SIZE, 0);
-            let sample_bytes = encode_to_vec(&sample, config).map_err(WalError::Encode)?;
+            let sample_bytes = encoding::encode_to_vec(&sample)?;
             let header_len = sample_bytes.len();
 
             let mut header_bytes = vec![0u8; header_len];
@@ -265,7 +292,7 @@ impl<T: WalData> Wal<T> {
                 return Err(WalError::InvalidHeader("Header checksum mismatched".into()));
             }
 
-            let (header, _) = decode_from_slice::<WalHeader, _>(&header_bytes, config)?;
+            let (header, _) = encoding::decode_from_slice::<WalHeader>(&header_bytes)?;
 
             if header.magic != WalHeader::MAGIC {
                 return Err(WalError::InvalidHeader("Bad magic".into()));
@@ -315,7 +342,7 @@ impl<T: WalData> Wal<T> {
 
     /// Appends a single record to the WAL.
     ///
-    /// The record is serialized using [`bincode`] and written as:
+    /// The record is serialized using [`crate::encoding`] and written as:
     /// `[u32 len LE][record_bytes][u32 crc32 LE]`,
     /// where the CRC is computed over the `len || record_bytes`.
     ///
@@ -324,9 +351,7 @@ impl<T: WalData> Wal<T> {
     pub fn append(&self, record: &T) -> Result<(), WalError> {
         trace!("Appending record: {:?}", record,);
 
-        let config = standard().with_fixed_int_encoding();
-
-        let record_bytes = encode_to_vec(record, config).map_err(WalError::Encode)?;
+        let record_bytes = encoding::encode_to_vec(record)?;
         let record_len = record_bytes.len() as u32;
 
         if record_len > self.header.max_record_size {
@@ -364,13 +389,11 @@ impl<T: WalData> Wal<T> {
     pub fn replay_iter(&self) -> Result<WalIter<T>, WalError> {
         info!("Starting WAL replay from file: {}", self.path);
 
-        let config = standard().with_fixed_int_encoding();
-        let header_bytes = encode_to_vec(&self.header, config).map_err(WalError::Encode)?;
+        let header_bytes = encoding::encode_to_vec(&self.header)?;
         let start_offset = (header_bytes.len() + U32_SIZE) as u64;
 
         Ok(WalIter {
             file: Arc::clone(&self.inner_file),
-            config,
             offset: start_offset,
             max_record_size: self.header.max_record_size as usize,
             _phantom: std::marker::PhantomData,
@@ -389,8 +412,7 @@ impl<T: WalData> Wal<T> {
         guard.set_len(0)?;
         guard.seek(SeekFrom::Start(0))?;
 
-        let config = standard().with_fixed_int_encoding();
-        let header_bytes = encode_to_vec(&self.header, config).map_err(WalError::Encode)?;
+        let header_bytes = encoding::encode_to_vec(&self.header)?;
 
         let mut hasher = Crc32::new();
         hasher.update(&header_bytes);
@@ -474,13 +496,6 @@ pub struct WalIter<T: WalData> {
     /// Shared file handle protected by a mutex.
     file: Arc<Mutex<File>>,
 
-    /// Bincode configuration for decoding.
-    config: bincode::config::Configuration<
-        bincode::config::LittleEndian,
-        bincode::config::Fixint,
-        bincode::config::NoLimit,
-    >,
-
     /// Current byte offset within WAL file.
     offset: u64,
 
@@ -563,9 +578,9 @@ impl<T: WalData> Iterator for WalIter<T> {
         }
 
         // Decode the record payload.
-        match decode_from_slice::<T, _>(&record_bytes, self.config) {
+        match encoding::decode_from_slice::<T>(&record_bytes) {
             Ok((record, _)) => Some(Ok(record)),
-            Err(e) => Some(Err(WalError::Decode(e))),
+            Err(e) => Some(Err(WalError::Encoding(e))),
         }
     }
 }

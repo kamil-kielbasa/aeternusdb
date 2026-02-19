@@ -10,8 +10,10 @@
 //! - [`MergeIterator`] — a heap-based k-way merge iterator that combines
 //!   multiple sorted record streams into a single globally-sorted stream.
 
+use crate::encoding::{self, EncodingError};
+
 /// Represents a single item emitted by the storage engine.
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone)]
 pub enum Record {
     /// A concrete key-value pair (point put).
     Put {
@@ -134,7 +136,7 @@ pub struct PointEntry {
 ///
 /// This type is shared across the memtable, SSTable, and compaction
 /// subsystems.
-#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug)]
 pub struct RangeTombstone {
     /// Inclusive start key of the deleted range.
     pub start: Vec<u8>,
@@ -147,6 +149,153 @@ pub struct RangeTombstone {
 
     /// Timestamp associated with this mutation.
     pub timestamp: u64,
+}
+
+// ------------------------------------------------------------------------------------------------
+// Encode / Decode — Record
+// ------------------------------------------------------------------------------------------------
+
+impl encoding::Encode for Record {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        match self {
+            Record::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => {
+                0u32.encode_to(buf)?;
+                key.encode_to(buf)?;
+                value.encode_to(buf)?;
+                lsn.encode_to(buf)?;
+                timestamp.encode_to(buf)?;
+            }
+            Record::Delete {
+                key,
+                lsn,
+                timestamp,
+            } => {
+                1u32.encode_to(buf)?;
+                key.encode_to(buf)?;
+                lsn.encode_to(buf)?;
+                timestamp.encode_to(buf)?;
+            }
+            Record::RangeDelete {
+                start,
+                end,
+                lsn,
+                timestamp,
+            } => {
+                2u32.encode_to(buf)?;
+                start.encode_to(buf)?;
+                end.encode_to(buf)?;
+                lsn.encode_to(buf)?;
+                timestamp.encode_to(buf)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl encoding::Decode for Record {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (tag, mut offset) = u32::decode_from(buf)?;
+        match tag {
+            0 => {
+                let (key, n) = Vec::<u8>::decode_from(&buf[offset..])?;
+                offset += n;
+                let (value, n) = Vec::<u8>::decode_from(&buf[offset..])?;
+                offset += n;
+                let (lsn, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                let (timestamp, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((
+                    Record::Put {
+                        key,
+                        value,
+                        lsn,
+                        timestamp,
+                    },
+                    offset,
+                ))
+            }
+            1 => {
+                let (key, n) = Vec::<u8>::decode_from(&buf[offset..])?;
+                offset += n;
+                let (lsn, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                let (timestamp, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((
+                    Record::Delete {
+                        key,
+                        lsn,
+                        timestamp,
+                    },
+                    offset,
+                ))
+            }
+            2 => {
+                let (start, n) = Vec::<u8>::decode_from(&buf[offset..])?;
+                offset += n;
+                let (end, n) = Vec::<u8>::decode_from(&buf[offset..])?;
+                offset += n;
+                let (lsn, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                let (timestamp, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((
+                    Record::RangeDelete {
+                        start,
+                        end,
+                        lsn,
+                        timestamp,
+                    },
+                    offset,
+                ))
+            }
+            _ => Err(EncodingError::InvalidTag {
+                tag,
+                type_name: "Record",
+            }),
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Encode / Decode — RangeTombstone
+// ------------------------------------------------------------------------------------------------
+
+impl encoding::Encode for RangeTombstone {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        self.start.encode_to(buf)?;
+        self.end.encode_to(buf)?;
+        self.lsn.encode_to(buf)?;
+        self.timestamp.encode_to(buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for RangeTombstone {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (start, mut offset) = Vec::<u8>::decode_from(buf)?;
+        let (end, n) = Vec::<u8>::decode_from(&buf[offset..])?;
+        offset += n;
+        let (lsn, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (timestamp, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        Ok((
+            RangeTombstone {
+                start,
+                end,
+                lsn,
+                timestamp,
+            },
+            offset,
+        ))
+    }
 }
 
 // ------------------------------------------------------------------------------------------------

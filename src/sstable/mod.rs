@@ -15,7 +15,7 @@
 //! during reads and merges. Bloom filters are maintained per SSTable for quick existence checks
 //! before scanning blocks.
 //!
-//! Data is serialized using [`bincode`] with **fixed integer encoding**, and block-level CRC32
+//! Data is serialized using a custom [`encoding`](crate::encoding) module with **fixed integer encoding**, and block-level CRC32
 //! checksums ensure corruption detection.
 //!
 //! # On-disk layout
@@ -91,7 +91,7 @@ pub use iterator::{BlockEntry, BlockIterator, ScanIterator};
 
 use std::{fs::File, io, path::Path};
 
-use bincode::{config::standard, decode_from_slice, encode_to_vec};
+use crate::encoding::{self, EncodingError};
 use bloomfilter::Bloom;
 use crc32fast::Hasher as Crc32;
 use memmap2::Mmap;
@@ -121,13 +121,9 @@ pub enum SSTableError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// Serialization error.
-    #[error("Serialization (encode) error: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
-
-    /// Deserialization error.
-    #[error("Deserialization (decode) error: {0}")]
-    Decode(#[from] bincode::error::DecodeError),
+    /// Encoding / decoding error.
+    #[error("Encoding error: {0}")]
+    Encoding(#[from] EncodingError),
 
     /// Internal invariant violation or poisoned lock.
     #[error("Internal error: {0}")]
@@ -144,7 +140,7 @@ pub enum SSTableError {
 
 /// SSTable file header, written at the beginning of the SSTable.
 /// Contains a magic number, version, and CRC32 checksum for integrity.
-#[derive(Default, bincode::Encode, bincode::Decode)]
+#[derive(Default)]
 pub(crate) struct SSTableHeader {
     /// Magic bytes to identify SSTable format (`b"SST0"`).
     magic: [u8; 4],
@@ -157,28 +153,24 @@ pub(crate) struct SSTableHeader {
 }
 
 /// Represents a data block in the SSTable, which contains serialized key-value entries.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableDataBlock {
     /// Raw serialized block data.
     pub(crate) data: Vec<u8>,
 }
 
 /// Represents a Bloom filter block used to quickly check the presence of point keys.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableBloomBlock {
     /// Serialized bloom filter bytes.
     pub(crate) data: Vec<u8>,
 }
 
 /// Represents a block containing range tombstones.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableRangeTombstoneDataBlock {
     /// List of serialized range tombstone cells.
     pub(crate) data: Vec<SSTableRangeTombstoneCell>,
 }
 
 /// Metadata block containing SSTable-level properties and statistics.
-#[derive(bincode::Encode, bincode::Decode)]
 pub struct SSTablePropertiesBlock {
     /// Creation timestamp (UNIX epoch nanos).
     pub creation_timestamp: u64,
@@ -212,7 +204,6 @@ pub struct SSTablePropertiesBlock {
 }
 
 /// Index entry pointing to a specific data block.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableIndexEntry {
     /// Key that separates this block from the next in sorted order.
     pub(crate) separator_key: Vec<u8>,
@@ -222,7 +213,6 @@ pub(crate) struct SSTableIndexEntry {
 }
 
 /// SSTable footer, stored at the very end of the file.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableFooter {
     /// Handle of the metaindex block, containing references to:
     /// - bloom filter block
@@ -241,7 +231,6 @@ pub(crate) struct SSTableFooter {
 }
 
 /// Represents a single key-value entry (or tombstone) in a data block.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableCell {
     /// Length of the key in bytes.
     pub(crate) key_len: u32,
@@ -260,7 +249,6 @@ pub(crate) struct SSTableCell {
 }
 
 /// Represents a range tombstone marking deletion of keys in `[start_key, end_key)`.
-#[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct SSTableRangeTombstoneCell {
     /// Start key of the deleted range (inclusive).
     pub(crate) start_key: Vec<u8>,
@@ -276,7 +264,7 @@ pub(crate) struct SSTableRangeTombstoneCell {
 }
 
 /// Handle to a block in the SSTable file, specifying its offset and size.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug)]
 pub(crate) struct BlockHandle {
     /// Offset of the block in the SSTable file.
     pub(crate) offset: u64,
@@ -286,13 +274,311 @@ pub(crate) struct BlockHandle {
 }
 
 /// Represents a single entry in the metaindex block.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug)]
 pub(crate) struct MetaIndexEntry {
     /// Name of the block (e.g., "filter.bloom", "meta.properties").
     pub(crate) name: String,
 
     /// Handle pointing to the block location.
     pub(crate) handle: BlockHandle,
+}
+
+// ------------------------------------------------------------------------------------------------
+// Encoding implementations
+// ------------------------------------------------------------------------------------------------
+
+impl encoding::Encode for BlockHandle {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.offset, buf)?;
+        encoding::Encode::encode_to(&self.size, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for BlockHandle {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (offset, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (size, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        Ok((Self { offset, size }, off))
+    }
+}
+
+impl encoding::Encode for SSTableHeader {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.magic, buf)?;
+        encoding::Encode::encode_to(&self.version, buf)?;
+        encoding::Encode::encode_to(&self.header_crc, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableHeader {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (magic, n) = <[u8; 4]>::decode_from(&buf[off..])?;
+        off += n;
+        let (version, n) = u32::decode_from(&buf[off..])?;
+        off += n;
+        let (header_crc, n) = u32::decode_from(&buf[off..])?;
+        off += n;
+        Ok((
+            Self {
+                magic,
+                version,
+                header_crc,
+            },
+            off,
+        ))
+    }
+}
+
+impl encoding::Encode for SSTableDataBlock {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.data, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableDataBlock {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (data, n) = <Vec<u8>>::decode_from(buf)?;
+        Ok((Self { data }, n))
+    }
+}
+
+impl encoding::Encode for SSTableBloomBlock {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.data, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableBloomBlock {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (data, n) = <Vec<u8>>::decode_from(buf)?;
+        Ok((Self { data }, n))
+    }
+}
+
+impl encoding::Encode for SSTableCell {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.key_len, buf)?;
+        encoding::Encode::encode_to(&self.value_len, buf)?;
+        encoding::Encode::encode_to(&self.timestamp, buf)?;
+        encoding::Encode::encode_to(&self.is_delete, buf)?;
+        encoding::Encode::encode_to(&self.lsn, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableCell {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (key_len, n) = u32::decode_from(&buf[off..])?;
+        off += n;
+        let (value_len, n) = u32::decode_from(&buf[off..])?;
+        off += n;
+        let (timestamp, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (is_delete, n) = bool::decode_from(&buf[off..])?;
+        off += n;
+        let (lsn, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        Ok((
+            Self {
+                key_len,
+                value_len,
+                timestamp,
+                is_delete,
+                lsn,
+            },
+            off,
+        ))
+    }
+}
+
+impl encoding::Encode for SSTableRangeTombstoneCell {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.start_key, buf)?;
+        encoding::Encode::encode_to(&self.end_key, buf)?;
+        encoding::Encode::encode_to(&self.timestamp, buf)?;
+        encoding::Encode::encode_to(&self.lsn, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableRangeTombstoneCell {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (start_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
+        off += n;
+        let (end_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
+        off += n;
+        let (timestamp, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (lsn, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        Ok((
+            Self {
+                start_key,
+                end_key,
+                timestamp,
+                lsn,
+            },
+            off,
+        ))
+    }
+}
+
+impl encoding::Encode for SSTableRangeTombstoneDataBlock {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::encode_vec(&self.data, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableRangeTombstoneDataBlock {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (data, n) = encoding::decode_vec::<SSTableRangeTombstoneCell>(buf)?;
+        Ok((Self { data }, n))
+    }
+}
+
+impl encoding::Encode for SSTablePropertiesBlock {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.creation_timestamp, buf)?;
+        encoding::Encode::encode_to(&self.record_count, buf)?;
+        encoding::Encode::encode_to(&self.tombstone_count, buf)?;
+        encoding::Encode::encode_to(&self.range_tombstones_count, buf)?;
+        encoding::Encode::encode_to(&self.min_lsn, buf)?;
+        encoding::Encode::encode_to(&self.max_lsn, buf)?;
+        encoding::Encode::encode_to(&self.min_timestamp, buf)?;
+        encoding::Encode::encode_to(&self.max_timestamp, buf)?;
+        encoding::Encode::encode_to(&self.min_key, buf)?;
+        encoding::Encode::encode_to(&self.max_key, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTablePropertiesBlock {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (creation_timestamp, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (record_count, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (tombstone_count, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (range_tombstones_count, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (min_lsn, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (max_lsn, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (min_timestamp, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (max_timestamp, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (min_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
+        off += n;
+        let (max_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
+        off += n;
+        Ok((
+            Self {
+                creation_timestamp,
+                record_count,
+                tombstone_count,
+                range_tombstones_count,
+                min_lsn,
+                max_lsn,
+                min_timestamp,
+                max_timestamp,
+                min_key,
+                max_key,
+            },
+            off,
+        ))
+    }
+}
+
+impl encoding::Encode for SSTableIndexEntry {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.separator_key, buf)?;
+        encoding::Encode::encode_to(&self.handle, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableIndexEntry {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (separator_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
+        off += n;
+        let (handle, n) = BlockHandle::decode_from(&buf[off..])?;
+        off += n;
+        Ok((
+            Self {
+                separator_key,
+                handle,
+            },
+            off,
+        ))
+    }
+}
+
+impl encoding::Encode for MetaIndexEntry {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.name, buf)?;
+        encoding::Encode::encode_to(&self.handle, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for MetaIndexEntry {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (name, n) = String::decode_from(&buf[off..])?;
+        off += n;
+        let (handle, n) = BlockHandle::decode_from(&buf[off..])?;
+        off += n;
+        Ok((Self { name, handle }, off))
+    }
+}
+
+impl encoding::Encode for SSTableFooter {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.metaindex, buf)?;
+        encoding::Encode::encode_to(&self.index, buf)?;
+        encoding::Encode::encode_to(&self.total_file_size, buf)?;
+        encoding::Encode::encode_to(&self.footer_crc32, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for SSTableFooter {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut off = 0;
+        let (metaindex, n) = BlockHandle::decode_from(&buf[off..])?;
+        off += n;
+        let (index, n) = BlockHandle::decode_from(&buf[off..])?;
+        off += n;
+        let (total_file_size, n) = u64::decode_from(&buf[off..])?;
+        off += n;
+        let (footer_crc32, n) = u32::decode_from(&buf[off..])?;
+        off += n;
+        Ok((
+            Self {
+                metaindex,
+                index,
+                total_file_size,
+                footer_crc32,
+            },
+            off,
+        ))
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -431,7 +717,7 @@ impl SSTable {
     ///    The entire table is memory-mapped for fast zero-copy block access.
     ///
     /// 2. **Decode and verify the header**
-    ///    - Deserialized using `bincode`
+    ///    - Deserialized using custom encoding
     ///    - Header CRC verified after zeroing the `header_crc` field
     ///    - Magic string and version must match engine constants
     ///
@@ -471,19 +757,18 @@ impl SSTable {
         let file = File::open(path)?;
 
         let mmap = unsafe { Mmap::map(&file)? };
-        let config = standard().with_fixed_int_encoding();
 
         let file_len = mmap.len();
         if file_len < SST_FOOTER_SIZE {
             return Err(SSTableError::Internal("File too small".into()));
         }
 
-        let (mut header, _) = decode_from_slice::<SSTableHeader, _>(&mmap[..SST_HDR_SIZE], config)?;
+        let (mut header, _) = encoding::decode_from_slice::<SSTableHeader>(&mmap[..SST_HDR_SIZE])?;
         let header_checksum = header.header_crc;
 
         header.header_crc = 0;
 
-        let header_bytes = encode_to_vec(&header, config)?;
+        let header_bytes = encoding::encode_to_vec(&header)?;
 
         let mut hasher = Crc32::new();
         hasher.update(&header_bytes);
@@ -506,12 +791,12 @@ impl SSTable {
         }
 
         let footer_start = file_len - SST_FOOTER_SIZE;
-        let (mut footer, _) = decode_from_slice::<SSTableFooter, _>(&mmap[footer_start..], config)?;
+        let (mut footer, _) = encoding::decode_from_slice::<SSTableFooter>(&mmap[footer_start..])?;
 
         let footer_checksum = footer.footer_crc32;
         footer.footer_crc32 = 0;
 
-        let footer_bytes = encode_to_vec(&footer, config)?;
+        let footer_bytes = encoding::encode_to_vec(&footer)?;
 
         let mut hasher = Crc32::new();
         hasher.update(&footer_bytes);
@@ -522,8 +807,7 @@ impl SSTable {
         }
 
         let metaindex_data = Self::read_block_bytes(&mmap, &footer.metaindex)?;
-        let (meta_entries, _) =
-            decode_from_slice::<Vec<MetaIndexEntry>, _>(&metaindex_data, config)?;
+        let (meta_entries, _) = encoding::decode_vec::<MetaIndexEntry>(&metaindex_data)?;
 
         let mut bloom_block: Option<BlockHandle> = None;
         let mut propertires_block: Option<BlockHandle> = None;
@@ -540,7 +824,7 @@ impl SSTable {
 
         let bloom = if let Some(bh) = bloom_block {
             let bloom_bytes = Self::read_block_bytes(&mmap, &bh)?;
-            let (bloom, _) = decode_from_slice::<SSTableBloomBlock, _>(&bloom_bytes, config)
+            let (bloom, _) = encoding::decode_from_slice::<SSTableBloomBlock>(&bloom_bytes)
                 .map_err(|e| SSTableError::Internal(e.to_string()))?;
             bloom
         } else {
@@ -554,7 +838,7 @@ impl SSTable {
 
         let properties = if let Some(pb) = propertires_block {
             let pbytes = Self::read_block_bytes(&mmap, &pb)?;
-            let (properties, _) = decode_from_slice::<SSTablePropertiesBlock, _>(&pbytes, config)?;
+            let (properties, _) = encoding::decode_from_slice::<SSTablePropertiesBlock>(&pbytes)?;
             properties
         } else {
             return Err(SSTableError::Internal("SSTable missing properties".into()));
@@ -562,16 +846,14 @@ impl SSTable {
 
         let range_deletes = if let Some(rh) = range_deletes_block {
             let rbytes = Self::read_block_bytes(&mmap, &rh)?;
-            let (ranges, _) =
-                decode_from_slice::<Vec<SSTableRangeTombstoneCell>, _>(&rbytes, config)?;
+            let (ranges, _) = encoding::decode_vec::<SSTableRangeTombstoneCell>(&rbytes)?;
             SSTableRangeTombstoneDataBlock { data: ranges }
         } else {
             SSTableRangeTombstoneDataBlock { data: Vec::new() }
         };
 
         let index_bytes = Self::read_block_bytes(&mmap, &footer.index)?;
-        let (index_entries, _) =
-            decode_from_slice::<Vec<SSTableIndexEntry>, _>(&index_bytes, config)?;
+        let (index_entries, _) = encoding::decode_vec::<SSTableIndexEntry>(&index_bytes)?;
 
         Ok(Self {
             id: 0,
@@ -652,9 +934,8 @@ impl SSTable {
         let block_idx = self.find_block_for_key(key);
         let entry = &self.index[block_idx];
 
-        let cfg = standard().with_fixed_int_encoding();
         let raw = Self::read_block_bytes(&self.mmap, &entry.handle)?;
-        let (block, _) = decode_from_slice::<SSTableDataBlock, _>(&raw, cfg)?;
+        let (block, _) = encoding::decode_from_slice::<SSTableDataBlock>(&raw)?;
 
         // 4) Scan block using BlockIterator (point keys)
         let mut iter = BlockIterator::new(block.data);

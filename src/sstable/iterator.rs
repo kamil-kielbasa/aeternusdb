@@ -41,10 +41,7 @@
 //! The scan iterator does **not** perform visibility resolution — that is the
 //! responsibility of upper layers (engine merge iterator, visibility filter).
 
-use bincode::{
-    config::{Configuration, Fixint, LittleEndian, standard},
-    decode_from_slice,
-};
+use crate::encoding;
 
 use crate::engine::Record;
 
@@ -83,7 +80,7 @@ pub struct BlockEntry {
 ///
 /// This iterator:
 ///
-/// - Decodes `SSTableCell` boundaries using [`bincode`] with fixed-int encoding.
+/// - Decodes `SSTableCell` boundaries using custom encoding with fixed-int encoding.
 /// - Provides block-local forward iteration.
 /// - Supports basic key seeking within the block.
 ///
@@ -95,9 +92,6 @@ pub struct BlockIterator {
 
     /// Cursor into `data`, always pointing at the next header to decode.
     cursor: usize,
-
-    /// bincode decoding configuration using little-endian + fixed-int encoding.
-    config: Configuration<LittleEndian, Fixint>,
 }
 
 impl BlockIterator {
@@ -105,11 +99,7 @@ impl BlockIterator {
     ///
     /// The provided `data` slice must contain a concatenation of encoded `SSTableCell`s.
     pub fn new(data: Vec<u8>) -> Self {
-        Self {
-            data,
-            cursor: 0,
-            config: standard().with_fixed_int_encoding(),
-        }
+        Self { data, cursor: 0 }
     }
 
     /// Reset the iterator to the first entry in the block.
@@ -124,7 +114,7 @@ impl BlockIterator {
     pub fn seek_to(&mut self, search_key: &[u8]) {
         self.cursor = 0;
         while self.cursor < self.data.len() {
-            match decode_from_slice::<SSTableCell, _>(&self.data[self.cursor..], self.config) {
+            match encoding::decode_from_slice::<SSTableCell>(&self.data[self.cursor..]) {
                 Ok((cell, cell_len)) => {
                     let pos = self.cursor + cell_len;
 
@@ -166,7 +156,7 @@ impl BlockIterator {
             return None;
         }
 
-        match decode_from_slice::<SSTableCell, _>(&self.data[self.cursor..], self.config) {
+        match encoding::decode_from_slice::<SSTableCell>(&self.data[self.cursor..]) {
             Ok((cell, cell_len)) => {
                 self.cursor += cell_len;
 
@@ -278,10 +268,7 @@ impl<'a> ScanIterator<'a> {
         let block_iter = if current_block_index < sstable.index.len() {
             let entry = &sstable.index[current_block_index];
             let block_bytes = SSTable::read_block_bytes(&sstable.mmap, &entry.handle)?;
-            let (block, _) = decode_from_slice::<SSTableDataBlock, _>(
-                &block_bytes,
-                standard().with_fixed_int_encoding(),
-            )?;
+            let (block, _) = encoding::decode_from_slice::<SSTableDataBlock>(&block_bytes)?;
             let mut it = BlockIterator::new(block.data);
             it.seek_to(start_key.as_slice());
             Some(it)
@@ -313,10 +300,7 @@ impl<'a> ScanIterator<'a> {
         let entry = &self.sstable.index[self.current_block_index];
         let block_bytes = SSTable::read_block_bytes(&self.sstable.mmap, &entry.handle)?;
 
-        let (block, _) = decode_from_slice::<SSTableDataBlock, _>(
-            &block_bytes,
-            standard().with_fixed_int_encoding(),
-        )?;
+        let (block, _) = encoding::decode_from_slice::<SSTableDataBlock>(&block_bytes)?;
         let mut it = BlockIterator::new(block.data);
         it.seek_to_first();
         self.current_block_iter = Some(it);

@@ -39,7 +39,7 @@ Manifest metadata is persisted using a **WAL + periodic snapshot** design:
 1. **Manifest WAL** (`wal-000000.log`) — append-only log of `ManifestEvent` records.
    Every mutation is appended and fsynced before the in-memory state is updated.
 
-2. **Manifest snapshot** (`manifest.snapshot`) — bincode-encoded dump of the entire
+2. **Manifest snapshot** (`manifest.snapshot`) — encoded dump of the entire
    `ManifestData` structure with a CRC32 checksum for corruption detection.
 
 3. **Recovery** — on startup the manifest loads the snapshot (if present), then
@@ -156,7 +156,7 @@ The manifest is fully thread-safe and can be called from any engine thread.
 <db_dir>/
   manifest/
     wal-000000.log       ← Manifest WAL (append-only event log)
-    manifest.snapshot     ← Latest checkpoint (bincode + CRC32)
+    manifest.snapshot     ← Latest checkpoint (custom encoding + CRC32)
     manifest.snapshot.tmp ← Temporary file during checkpoint (deleted on success)
 ```
 
@@ -184,6 +184,6 @@ records metadata decisions. The engine coordinates the full workflow:
 |----------------------------|------------------------------------------|
 | `Wal`                      | Underlying WAL I/O or format error       |
 | `Io`                       | Filesystem error during snapshot I/O     |
-| `Encode` / `Decode`        | Bincode serialization failure            |
+| `Encoding`                 | Encoding / decoding failure              |
 | `SnapshotChecksumMismatch` | Snapshot file corrupted or tampered       |
 | `Internal`                 | Mutex poisoned or invariant violation    |

@@ -42,7 +42,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bincode::{config::standard, encode_to_vec};
+use crate::encoding;
 use bloomfilter::Bloom;
 use crc32fast::Hasher as Crc32;
 
@@ -146,15 +146,13 @@ fn write_checksummed_block(
 ///
 /// On-disk layout: `[SSTableHeader (12 B)][outer_crc32 (4 B)]` = 16 bytes.
 fn write_header(writer: &mut impl Write) -> Result<(), SSTableError> {
-    let config = standard().with_fixed_int_encoding();
-
     // Step 1: encode with crc = 0, compute inner CRC.
     let header = SSTableHeader {
         magic: SST_HDR_MAGIC,
         version: SST_HDR_VERSION,
         header_crc: 0,
     };
-    let zeroed_bytes = encode_to_vec(&header, config)?;
+    let zeroed_bytes = encoding::encode_to_vec(&header)?;
     let mut hasher = Crc32::new();
     hasher.update(&zeroed_bytes);
     let inner_crc = hasher.finalize();
@@ -164,7 +162,7 @@ fn write_header(writer: &mut impl Write) -> Result<(), SSTableError> {
         header_crc: inner_crc,
         ..header
     };
-    let header_bytes = encode_to_vec(&header, config)?;
+    let header_bytes = encoding::encode_to_vec(&header)?;
     let mut hasher = Crc32::new();
     hasher.update(&header_bytes);
     let outer_crc = hasher.finalize();
@@ -183,12 +181,10 @@ fn flush_data_block(
     block_first_key: &mut Option<Vec<u8>>,
     index_entries: &mut Vec<SSTableIndexEntry>,
 ) -> Result<(), SSTableError> {
-    let config = standard().with_fixed_int_encoding();
-
     let block = SSTableDataBlock {
         data: mem::take(current_block),
     };
-    let block_bytes = encode_to_vec(&block, config)?;
+    let block_bytes = encoding::encode_to_vec(&block)?;
     let (offset, data_len) = write_checksummed_block(writer, &block_bytes)?;
 
     index_entries.push(SSTableIndexEntry {
@@ -215,7 +211,6 @@ fn write_data_blocks(
     entries: impl Iterator<Item = PointEntry>,
     bloom: &mut Bloom<Vec<u8>>,
 ) -> Result<(BuildStats, Vec<SSTableIndexEntry>), SSTableError> {
-    let config = standard().with_fixed_int_encoding();
     let mut stats = BuildStats::new();
     let mut index_entries = Vec::new();
     let mut current_block = Vec::<u8>::new();
@@ -247,7 +242,7 @@ fn write_data_blocks(
             is_delete: entry.value.is_none(),
             lsn: entry.lsn,
         };
-        let mut cell_bytes = encode_to_vec(&cell, config)?;
+        let mut cell_bytes = encoding::encode_to_vec(&cell)?;
         cell_bytes.extend_from_slice(&entry.key);
         if let Some(value) = entry.value {
             cell_bytes.extend_from_slice(&value);
@@ -287,7 +282,6 @@ fn write_range_tombstones(
     entries: impl Iterator<Item = RangeTombstone>,
     stats: &mut BuildStats,
 ) -> Result<(u64, usize), SSTableError> {
-    let config = standard().with_fixed_int_encoding();
     let mut block = SSTableRangeTombstoneDataBlock { data: Vec::new() };
 
     for entry in entries {
@@ -300,7 +294,7 @@ fn write_range_tombstones(
         });
     }
 
-    let bytes = encode_to_vec(&block, config)?;
+    let bytes = encoding::encode_to_vec(&block)?;
     write_checksummed_block(writer, &bytes)
 }
 
@@ -314,8 +308,6 @@ fn write_metaindex(
     properties: BlockHandle,
     range_deletes: BlockHandle,
 ) -> Result<(u64, usize), SSTableError> {
-    let config = standard().with_fixed_int_encoding();
-
     let meta_entries = vec![
         MetaIndexEntry {
             name: "filter.bloom".to_string(),
@@ -331,7 +323,8 @@ fn write_metaindex(
         },
     ];
 
-    let bytes = encode_to_vec(&meta_entries, config)?;
+    let mut bytes = Vec::new();
+    encoding::encode_vec(&meta_entries, &mut bytes)?;
     write_checksummed_block(writer, &bytes)
 }
 
@@ -341,7 +334,6 @@ fn write_footer(
     metaindex: BlockHandle,
     index: BlockHandle,
 ) -> Result<(), SSTableError> {
-    let config = standard().with_fixed_int_encoding();
     let current_pos = file.metadata()?.len();
 
     let footer = SSTableFooter {
@@ -351,7 +343,7 @@ fn write_footer(
         footer_crc32: 0,
     };
 
-    let footer_bytes = encode_to_vec(&footer, config)?;
+    let footer_bytes = encoding::encode_to_vec(&footer)?;
     let mut hasher = Crc32::new();
     hasher.update(&footer_bytes);
     let footer_crc = hasher.finalize();
@@ -360,7 +352,7 @@ fn write_footer(
         footer_crc32: footer_crc,
         ..footer
     };
-    let footer_bytes = encode_to_vec(&footer_with_crc, config)?;
+    let footer_bytes = encoding::encode_to_vec(&footer_with_crc)?;
 
     let mut writer = BufWriter::new(&mut *file);
     writer.write_all(&footer_bytes)?;
@@ -405,7 +397,7 @@ impl<P: AsRef<Path>> SstWriter<P> {
     ///
     /// - [`SSTableError::Internal`] if both iterators are empty.
     /// - I/O errors from writing or seeking.
-    /// - `bincode` encode errors.
+    /// - Encoding errors.
     pub fn build(
         self,
         point_entries: impl Iterator<Item = PointEntry>,
@@ -413,7 +405,6 @@ impl<P: AsRef<Path>> SstWriter<P> {
         range_tombstones: impl Iterator<Item = RangeTombstone>,
         range_count: usize,
     ) -> Result<(), SSTableError> {
-        let config = standard().with_fixed_int_encoding();
         let mut point_entries = point_entries.peekable();
         let mut range_tombstones = range_tombstones.peekable();
 
@@ -454,7 +445,7 @@ impl<P: AsRef<Path>> SstWriter<P> {
         let bloom_block = SSTableBloomBlock {
             data: bloom.as_slice().to_vec(),
         };
-        let bloom_bytes = encode_to_vec(&bloom_block, config)?;
+        let bloom_bytes = encoding::encode_to_vec(&bloom_block)?;
         let (bloom_off, bloom_len) = write_checksummed_block(&mut writer, &bloom_bytes)?;
 
         // 4. Range tombstones block
@@ -462,7 +453,7 @@ impl<P: AsRef<Path>> SstWriter<P> {
 
         // 5. Properties block
         let properties = stats.into_properties(range_count);
-        let props_bytes = encode_to_vec(&properties, config)?;
+        let props_bytes = encoding::encode_to_vec(&properties)?;
         let (props_off, props_len) = write_checksummed_block(&mut writer, &props_bytes)?;
 
         // 6. Metaindex block
@@ -483,7 +474,8 @@ impl<P: AsRef<Path>> SstWriter<P> {
         )?;
 
         // 7. Index block
-        let index_bytes = encode_to_vec(&index_entries, config)?;
+        let mut index_bytes = Vec::new();
+        encoding::encode_vec(&index_entries, &mut index_bytes)?;
         let (idx_off, idx_len) = write_checksummed_block(&mut writer, &index_bytes)?;
 
         // 8. Flush buffered data before footer (footer reads file length).

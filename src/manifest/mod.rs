@@ -21,7 +21,7 @@
 //!    - adding/removing SSTables,
 //!    - updating LSN.
 //!
-//! 2. **Manifest snapshot** (`manifest.snapshot`) is a compact bincode-encoded
+//! 2. **Manifest snapshot** (`manifest.snapshot`) is a compact encoded
 //!    dump of the whole metadata structure. Checksum ensures corruption detection.
 //!
 //! 3. On startup:
@@ -48,8 +48,8 @@ mod tests;
 // Includes
 // ------------------------------------------------------------------------------------------------
 
+use crate::encoding::{self, EncodingError};
 use crate::wal::{Wal, WalError};
-use bincode::{config::standard, decode_from_slice, encode_to_vec};
 use crc32fast::Hasher as Crc32;
 use std::{
     fs::{self, File, OpenOptions},
@@ -80,13 +80,9 @@ pub enum ManifestError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// Serialization error.
-    #[error("Serialization (encode) error: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
-
-    /// Deserialization error.
-    #[error("Deserialization (decode) error: {0}")]
-    Decode(#[from] bincode::error::DecodeError),
+    /// Encoding / decoding error.
+    #[error("Encoding error: {0}")]
+    Encoding(#[from] EncodingError),
 
     /// Snapshot file is corrupted or checksum mismatched.
     #[error("Snapshot checksum mismatch")]
@@ -105,7 +101,7 @@ pub enum ManifestError {
 ///
 /// This structure stores the persistent metadata describing
 /// the layout of the LSM tree.
-#[derive(Debug, PartialEq, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ManifestData {
     /// Monotonically increasing manifest version.
     pub version: u64,
@@ -132,13 +128,220 @@ pub struct ManifestData {
 /// Entry describing a single SSTable known to the manifest.
 ///
 /// Identifies table by unique ID and on-disk path.
-#[derive(Debug, Clone, PartialEq, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ManifestSstEntry {
     /// Globally unique SSTable ID.
     pub id: u64,
 
     /// Filesystem path to SSTable file.
     pub path: PathBuf,
+}
+
+// ------------------------------------------------------------------------------------------------
+// Encoding implementations
+// ------------------------------------------------------------------------------------------------
+
+impl encoding::Encode for ManifestSstEntry {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.id, buf)?;
+        encoding::Encode::encode_to(&self.path, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for ManifestSstEntry {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut offset = 0;
+        let (id, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (path, n) = PathBuf::decode_from(&buf[offset..])?;
+        offset += n;
+        Ok((Self { id, path }, offset))
+    }
+}
+
+impl encoding::Encode for ManifestData {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.version, buf)?;
+        encoding::Encode::encode_to(&self.last_lsn, buf)?;
+        encoding::Encode::encode_to(&self.active_wal, buf)?;
+        encoding::encode_vec(&self.frozen_wals, buf)?;
+        encoding::encode_vec(&self.sstables, buf)?;
+        encoding::Encode::encode_to(&self.next_sst_id, buf)?;
+        encoding::Encode::encode_to(&self.dirty, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for ManifestData {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut offset = 0;
+        let (version, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (last_lsn, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (active_wal, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (frozen_wals, n) = encoding::decode_vec::<u64>(&buf[offset..])?;
+        offset += n;
+        let (sstables, n) = encoding::decode_vec::<ManifestSstEntry>(&buf[offset..])?;
+        offset += n;
+        let (next_sst_id, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (dirty, n) = bool::decode_from(&buf[offset..])?;
+        offset += n;
+        Ok((
+            Self {
+                version,
+                last_lsn,
+                active_wal,
+                frozen_wals,
+                sstables,
+                next_sst_id,
+                dirty,
+            },
+            offset,
+        ))
+    }
+}
+
+impl encoding::Encode for ManifestEvent {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        match self {
+            ManifestEvent::Version { version } => {
+                encoding::Encode::encode_to(&0u32, buf)?;
+                encoding::Encode::encode_to(version, buf)?;
+            }
+            ManifestEvent::SetActiveWal { wal } => {
+                encoding::Encode::encode_to(&1u32, buf)?;
+                encoding::Encode::encode_to(wal, buf)?;
+            }
+            ManifestEvent::AddFrozenWal { wal } => {
+                encoding::Encode::encode_to(&2u32, buf)?;
+                encoding::Encode::encode_to(wal, buf)?;
+            }
+            ManifestEvent::RemoveFrozenWal { wal } => {
+                encoding::Encode::encode_to(&3u32, buf)?;
+                encoding::Encode::encode_to(wal, buf)?;
+            }
+            ManifestEvent::AddSst { entry } => {
+                encoding::Encode::encode_to(&4u32, buf)?;
+                encoding::Encode::encode_to(entry, buf)?;
+            }
+            ManifestEvent::RemoveSst { id } => {
+                encoding::Encode::encode_to(&5u32, buf)?;
+                encoding::Encode::encode_to(id, buf)?;
+            }
+            ManifestEvent::UpdateLsn { last_lsn } => {
+                encoding::Encode::encode_to(&6u32, buf)?;
+                encoding::Encode::encode_to(last_lsn, buf)?;
+            }
+            ManifestEvent::AllocateSstId { id } => {
+                encoding::Encode::encode_to(&7u32, buf)?;
+                encoding::Encode::encode_to(id, buf)?;
+            }
+            ManifestEvent::Compaction { added, removed } => {
+                encoding::Encode::encode_to(&8u32, buf)?;
+                encoding::encode_vec(added, buf)?;
+                encoding::encode_vec(removed, buf)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl encoding::Decode for ManifestEvent {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut offset = 0;
+        let (tag, n) = u32::decode_from(buf)?;
+        offset += n;
+        match tag {
+            0 => {
+                let (version, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::Version { version }, offset))
+            }
+            1 => {
+                let (wal, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::SetActiveWal { wal }, offset))
+            }
+            2 => {
+                let (wal, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::AddFrozenWal { wal }, offset))
+            }
+            3 => {
+                let (wal, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::RemoveFrozenWal { wal }, offset))
+            }
+            4 => {
+                let (entry, n) = ManifestSstEntry::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::AddSst { entry }, offset))
+            }
+            5 => {
+                let (id, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::RemoveSst { id }, offset))
+            }
+            6 => {
+                let (last_lsn, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::UpdateLsn { last_lsn }, offset))
+            }
+            7 => {
+                let (id, n) = u64::decode_from(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::AllocateSstId { id }, offset))
+            }
+            8 => {
+                let (added, n) = encoding::decode_vec::<ManifestSstEntry>(&buf[offset..])?;
+                offset += n;
+                let (removed, n) = encoding::decode_vec::<u64>(&buf[offset..])?;
+                offset += n;
+                Ok((ManifestEvent::Compaction { added, removed }, offset))
+            }
+            _ => Err(EncodingError::InvalidTag {
+                tag,
+                type_name: "ManifestEvent",
+            }),
+        }
+    }
+}
+
+impl encoding::Encode for ManifestSnapshot {
+    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
+        encoding::Encode::encode_to(&self.version, buf)?;
+        encoding::Encode::encode_to(&self.snapshot_lsn, buf)?;
+        encoding::Encode::encode_to(&self.manifest_data, buf)?;
+        encoding::Encode::encode_to(&self.checksum, buf)?;
+        Ok(())
+    }
+}
+
+impl encoding::Decode for ManifestSnapshot {
+    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let mut offset = 0;
+        let (version, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (snapshot_lsn, n) = u64::decode_from(&buf[offset..])?;
+        offset += n;
+        let (manifest_data, n) = ManifestData::decode_from(&buf[offset..])?;
+        offset += n;
+        let (checksum, n) = u32::decode_from(&buf[offset..])?;
+        offset += n;
+        Ok((
+            Self {
+                version,
+                snapshot_lsn,
+                manifest_data,
+                checksum,
+            },
+            offset,
+        ))
+    }
 }
 
 impl Default for ManifestData {
@@ -161,7 +364,7 @@ impl Default for ManifestData {
 
 /// Record stored in manifest WAL. Each variant describes
 /// a single metadata mutation applied to ManifestData.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug)]
 pub enum ManifestEvent {
     /// Sets a new version of manifest
     Version { version: u64 },
@@ -198,7 +401,7 @@ pub enum ManifestEvent {
 /// Serialized snapshot stored in `manifest.snapshot`.
 ///
 /// Contains full manifest data and a checksum for corruption detection.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug)]
 struct ManifestSnapshot {
     /// Snapshot version number (matches manifest version).
     version: u64,
@@ -458,8 +661,7 @@ impl Manifest {
         };
 
         // 2. Serialize snapshot_no_csum and compute checksum over it
-        let config = standard().with_fixed_int_encoding();
-        let without_csum_bytes = encode_to_vec(&snapshot_no_csum, config)?;
+        let without_csum_bytes = encoding::encode_to_vec(&snapshot_no_csum)?;
 
         let mut hasher = Crc32::new();
         hasher.update(&without_csum_bytes);
@@ -473,7 +675,7 @@ impl Manifest {
             checksum,
         };
 
-        let final_bytes = encode_to_vec(&final_snapshot, config)?;
+        let final_bytes = encoding::encode_to_vec(&final_snapshot)?;
 
         // 4. Write to temp file
         let tmp_name = format!("{}{}", SNAPSHOT_FILENAME, SNAPSHOT_TMP_SUFFIX);
@@ -524,13 +726,12 @@ impl Manifest {
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
 
-        let config = standard().with_fixed_int_encoding();
-        let (mut snap, _) = decode_from_slice::<ManifestSnapshot, _>(buf.as_slice(), config)?;
+        let (mut snap, _) = encoding::decode_from_slice::<ManifestSnapshot>(buf.as_slice())?;
 
         let stored_checksum = snap.checksum;
         snap.checksum = 0;
 
-        let snapshot_bytes = encode_to_vec(&snap, config)?;
+        let snapshot_bytes = encoding::encode_to_vec(&snap)?;
 
         let mut hasher = Crc32::new();
         hasher.update(snapshot_bytes.as_slice());

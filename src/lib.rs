@@ -43,6 +43,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod compaction;
+pub(crate) mod encoding;
 pub(crate) mod engine;
 pub(crate) mod manifest;
 pub(crate) mod memtable;

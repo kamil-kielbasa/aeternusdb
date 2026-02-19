@@ -44,6 +44,7 @@ db.close().unwrap();
 | [SSTable](doc/sstable.md) | On-disk sorted table format, block layout, and read/write process |
 | [Manifest](doc/manifest.md) | Metadata persistence, WAL + snapshot model, and crash safety |
 | [Compaction](doc/compaction.md) | Size-Tiered Compaction Strategy (STCS) — minor, tombstone, and major |
+| [Encoding](doc/encoding.md) | Custom binary encoding format, wire layout, safety limits, and type support |
 | [Changelog](CHANGELOG.md) | Release history and feature notes |
 
 **API Reference (rustdoc):** [kamil-kielbasa.github.io/aeternusdb](https://kamil-kielbasa.github.io/aeternusdb/)

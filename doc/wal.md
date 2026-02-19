@@ -41,7 +41,7 @@ Each record is a self-contained, checksummed unit:
 | Component | Size | Description |
 |-----------|------|-------------|
 | `len` | 4 bytes (LE) | Length of the serialized record in bytes. |
-| `record_bytes` | `len` bytes | Record payload serialized with `bincode` (fixed-int encoding). |
+| `record_bytes` | `len` bytes | Record payload serialized with custom encoding (fixed-int, little-endian). |
 | `crc32` | 4 bytes (LE) | CRC32 checksum computed over `len ‖ record_bytes`. |
 
 The checksum covers both the length prefix and the payload, protecting against both data corruption and length field corruption.
@@ -75,7 +75,7 @@ manifest/wal-000001.log    # Manifest WAL
 append(record) → Result<(), WalError>
 ```
 
-1. Serialize `record` with `bincode`.
+1. Serialize `record` with custom encoding.
 2. Check that the serialized size does not exceed `max_record_size`.
 3. Compute CRC32 over `[len_le ‖ record_bytes]`.
 4. Acquire the file mutex.
@@ -132,7 +132,7 @@ The `WalError` enum covers all failure modes:
 | Variant | Cause |
 |---------|-------|
 | `Io` | Underlying filesystem error. |
-| `Encode` / `Decode` | Bincode serialization failure. |
+| `Encoding` | Encoding / decoding failure. |
 | `ChecksumMismatch` | CRC32 verification failed — data corruption or partial write. |
 | `RecordTooLarge` | Record exceeds `max_record_size`. |
 | `UnexpectedEof` | Record was truncated (crash during write). |

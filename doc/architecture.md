@@ -178,7 +178,7 @@ The `DbConfig` is converted to an `EngineConfig` with additional STCS-specific p
 
 ### Pure Rust, no unsafe
 
-The entire codebase uses safe Rust. Memory-mapped I/O is provided by the `memmap2` crate, and serialization by `bincode` with fixed-integer encoding.
+The entire codebase uses safe Rust. Memory-mapped I/O is provided by the `memmap2` crate, and serialization by a custom `encoding` module with fixed-integer encoding.
 
 ### WAL-first writes
 

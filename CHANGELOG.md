@@ -52,14 +52,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - Background thread pool (`crossbeam` channel) for non-blocking flush and compaction.
 - Configurable thresholds for bucket sizing, compaction triggers, and tombstone ratios.
 
+#### Encoding
+- Custom, zero-dependency binary encoding module replacing `bincode` — full ownership of the on-disk wire format.
+- `Encode` and `Decode` traits with fallible, deterministic serialization (no panics, no `unwrap`).
+- Little-endian wire format with `u32` length/count prefixes.
+- Primitive implementations: `u8`, `u16`, `u32`, `u64`, `i64`, `bool`.
+- Fixed-size byte arrays (`[u8; N]`) — raw bytes, no length prefix.
+- Variable-length types: `Vec<u8>`, `&[u8]`, `String`, `&str`, `PathBuf` — all length-prefixed.
+- `Option<T>` — tag-based encoding (`0x00` = `None`, `0x01` = `Some`).
+- Generic `encode_vec` / `decode_vec` for `Vec<T>` with per-element encoding.
+- `EncodingError` enum with six variants: `UnexpectedEof`, `InvalidTag`, `InvalidBool`, `InvalidUtf8`, `LengthOverflow`, `Custom`.
+- Safety limits to prevent allocation bombs: `MAX_BYTE_LEN` (256 MiB) and `MAX_VEC_ELEMENTS` (16 M).
+- Zero-panic guarantee — all errors propagated via `Result`.
+- Convenience helpers: `encode_to_vec` and `decode_from_slice`.
+- Platform-native `PathBuf` encoding via `OsStr` raw bytes (Unix).
+
 #### Crash Recovery
 - Automatic recovery on `Db::open()` — replays manifest, frozen WALs, active WAL, and reconciles LSN across all layers.
 - Orphan SSTable cleanup (unreferenced `.sst` files deleted, `.tmp` files removed).
 
 #### Testing
-- ~250 unit tests covering all modules.
-- ~11 stress tests (marked `#[ignore]`) for concurrency, crash recovery, and compaction under load.
-- ~27 integration tests covering library api.
+- 421 tests total (372 unit + 27 integration + 22 integration hardening); 0 failures, 0 warnings.
+- 11 stress tests (marked `#[ignore]`) for concurrency, crash recovery, and compaction under load.
+
+**Priority 1 — Critical correctness (29 tests across 5 files)**
+- `tests_crash_recovery` — WAL truncation at various offsets, partial flush crash, crash-on-reopen idempotency.
+- `tests_crash_flush` — crash-during-flush recovery, data visible after recovery.
+- `tests_crash_compaction` — crash-during-compaction with orphan `.tmp` cleanup.
+- `tests_multi_crash` — multiple consecutive crashes with data integrity.
+- `tests_lsn_crash` — LSN monotonicity preserved across crash and recovery.
+
+**Priority 2 — Robustness (≈45 tests across 7 files)**
+- `tests_concurrent_ops` — parallel readers and writers, scan under concurrent mutation.
+- `tests_boundary_values` — 1-byte keys/values, max-size keys, binary/non-UTF-8 keys, u64 sentinel values.
+- `tests_file_cleanup` — orphan `.tmp` removal, unreferenced SSTable cleanup on open.
+- `tests_compaction_edge` — compaction on empty DB returns false, single-SSTable major compact, tombstone compaction idempotency, range tombstone drop after major compact, minor compact with mismatched sizes.
+- `tests_corruption` (SSTable) — truncated file, wrong magic, corrupted block CRC.
+- `tests_rotation_edge` (WAL) — rotate-on-every-write, replay across many segments.
+- `tests_checkpoint` (manifest) — checkpoint truncates WAL, recovery after checkpoint restores full state.
+
+**Priority 3 — Hardening / edge cases (46 tests across 5 files)**
+- `tests_hardening_edge` (engine) — empty-engine compaction and stats, tombstone-only flush and recovery, get/scan across all three layers simultaneously, 0xFF byte key scans, double-close with writes between.
+- `tests_hardening` (SSTable) — single-entry SSTable, all-point-tombstones SSTable, range-tombstones-only SSTable, minimal mixed, duplicate keys highest-LSN wins.
+- `tests_scan_edge` (engine) — prefix-key scan boundaries in memtable and SSTable, exactly-one-match range, adjacent non-overlapping ranges, deleted key at scan start.
+- `tests_hardening` (memtable) — WAL replay with only range-deletes, interleaved point-delete and range-delete recovery, resurrect after range-delete survives replay, overlapping range tombstones, LSN counter resumption after replay.
+- `integration_hardening` — exact boundary values accepted/rejected for all six `DbConfig` fields (`write_buffer_size`, `min_compaction_threshold`, `max_compaction_threshold`, `tombstone_compaction_ratio`, `tombstone_compaction_interval`, `thread_pool_size`); `scan` with `start == end` returns empty; `delete_range` with empty keys rejected; `major_compact` on empty DB; reopen after deleting all keys.
 
 #### CI / CD
 - GitHub Actions CI workflow — `cargo check`, `rustfmt`, `clippy`, `cargo test`.
