@@ -1,6 +1,7 @@
 # AeternusDB
 
 [![CI](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/ci.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/ci.yml)
+[![Bench](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/bench.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/bench.yml)
 [![Docs](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/docs.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/docs.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -45,9 +46,12 @@ db.close().unwrap();
 | [Manifest](doc/manifest.md) | Metadata persistence, WAL + snapshot model, and crash safety |
 | [Compaction](doc/compaction.md) | Size-Tiered Compaction Strategy (STCS) — minor, tombstone, and major |
 | [Encoding](doc/encoding.md) | Custom binary encoding format, wire layout, safety limits, and type support |
+| [Benchmarking](doc/benchmarking.md) | How to run, read, and profile Criterion micro-benchmarks and YCSB workloads |
 | [Changelog](CHANGELOG.md) | Release history and feature notes |
 
 **API Reference (rustdoc):** [kamil-kielbasa.github.io/aeternusdb](https://kamil-kielbasa.github.io/aeternusdb/)
+
+**Benchmark Reports (Criterion):** [kamil-kielbasa.github.io/aeternusdb/criterion/report](https://kamil-kielbasa.github.io/aeternusdb/criterion/report/index.html)
 
 ## Build & Test
 
@@ -55,6 +59,7 @@ db.close().unwrap();
 cargo build
 cargo test --lib                     # unit tests
 cargo test --lib -- --ignored        # stress tests
+cargo bench                          # performance benchmarks
 cargo doc --no-deps --open           # local API docs
 ```
 

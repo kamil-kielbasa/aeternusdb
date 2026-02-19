@@ -45,6 +45,27 @@ cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 ```
 
+## Benchmark
+
+```bash
+# Run all benchmarks (micro + YCSB)
+cargo bench
+
+# Run only micro-benchmarks
+cargo bench --bench micro
+
+# Run only YCSB workloads
+cargo bench --bench ycsb
+
+# Filter by pattern
+cargo bench --bench micro -- "put"
+cargo bench --bench micro -- "get/sstable"
+```
+
+Reports are generated at `target/criterion/report/index.html`.
+See [Benchmarking Guide](benchmarking.md) for a full walkthrough of
+what is measured, how to read results, and how to profile hot spots.
+
 ## Generate Documentation
 
 ```bash
@@ -173,4 +194,5 @@ src/
 The project uses GitHub Actions for continuous integration:
 
 - **CI** ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) — runs `cargo check`, `rustfmt`, `clippy`, and `cargo test` on every push and PR.
+- **Bench** ([`.github/workflows/bench.yml`](../.github/workflows/bench.yml)) — runs Criterion micro-benchmarks and YCSB workloads, stores historical results, and comments on PRs with performance comparisons.
 - **Docs** ([`.github/workflows/docs.yml`](../.github/workflows/docs.yml)) — builds `cargo doc` and deploys to GitHub Pages on push to `main`.

@@ -1,0 +1,70 @@
+name: Bench
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: gh-pages-bench
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Criterion benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run benchmarks
+        run: |
+          cargo bench --bench micro -- --output-format bencher | tee micro.txt
+          cargo bench --bench ycsb  -- --output-format bencher | tee ycsb.txt
+
+      - name: Combine results
+        run: cat micro.txt ycsb.txt > output.txt
+
+      - name: Publish Criterion HTML reports
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: target/criterion
+          destination_dir: criterion
+          keep_files: true
+          commit_message: "bench: update Criterion HTML reports"
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: AeternusDB Benchmarks
+          tool: cargo
+          output-file-path: output.txt
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          alert-threshold: "115%"
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-comment-cc-users: "@${{ github.repository_owner }}"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: AeternusDB Benchmarks
+          tool: cargo
+          output-file-path: output.txt
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-always: true
+          auto-push: false

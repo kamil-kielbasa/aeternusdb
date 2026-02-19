@@ -1,6 +1,6 @@
 [package]
 name = "aeternusdb"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "A library that provides an embeddable, persistent key-value store for fast storage."
@@ -14,7 +14,17 @@ crossbeam = "0.8.4"
 memmap2 = "0.9.9"
 thiserror = "2.0.17"
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.9"
 tempfile = "3.23.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bench]]
+name = "micro"
+harness = false
+
+[[bench]]
+name = "ycsb"
+harness = false
