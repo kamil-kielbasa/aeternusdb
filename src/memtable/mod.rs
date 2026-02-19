@@ -124,25 +124,7 @@ pub struct MemtableSingleEntry {
     pub lsn: u64,
 }
 
-/// A range tombstone that logically deletes keys in `[start, end)`.
-///
-/// Range tombstones are versioned via LSN and may overlap.
-/// During reads, the highest-LSN tombstone covering a key
-/// takes precedence.
-#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
-pub struct MemtableRangeTombstone {
-    /// Inclusive start key of the deleted range.
-    pub start: Vec<u8>,
-
-    /// Exclusive end key of the deleted range.
-    pub end: Vec<u8>,
-
-    /// Log Sequence Number of this tombstone.
-    pub lsn: u64,
-
-    /// Timestamp associated with this mutation.
-    pub timestamp: u64,
-}
+use crate::engine::RangeTombstone;
 
 /// Result of a `get` operation on the memtable.
 #[derive(Debug, PartialEq)]
@@ -169,7 +151,7 @@ struct MemtableInner {
     tree: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, MemtableSingleEntry>>,
 
     /// Range tombstones indexed by start key and ordered by descending LSN.
-    range_tombstones: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, MemtableRangeTombstone>>,
+    range_tombstones: BTreeMap<Vec<u8>, BTreeMap<Reverse<u64>, RangeTombstone>>,
 
     /// Approximate in-memory footprint.
     approximate_size: usize,
@@ -277,14 +259,14 @@ impl Memtable {
                     timestamp,
                 } => {
                     let record_size =
-                        std::mem::size_of::<MemtableRangeTombstone>() + start.len() + end.len();
+                        std::mem::size_of::<RangeTombstone>() + start.len() + end.len();
                     inner.approximate_size += record_size;
 
                     if lsn > max_lsn_seen {
                         max_lsn_seen = lsn;
                     }
 
-                    let record_value = MemtableRangeTombstone {
+                    let record_value = RangeTombstone {
                         start,
                         end,
                         lsn,
@@ -458,7 +440,7 @@ impl Memtable {
         let lsn = self.next_lsn.fetch_add(1, Ordering::SeqCst);
         let timestamp = Self::current_timestamp();
 
-        let record_size = std::mem::size_of::<MemtableRangeTombstone>() + start.len() + end.len();
+        let record_size = std::mem::size_of::<RangeTombstone>() + start.len() + end.len();
         let record = Record::RangeDelete {
             start: start.clone(),
             end: end.clone(),
@@ -476,7 +458,7 @@ impl Memtable {
         self.wal.append(&record)?;
 
         // 2. In-memory update
-        let value = MemtableRangeTombstone {
+        let value = RangeTombstone {
             start: start.to_vec(),
             end: end.to_vec(),
             lsn,

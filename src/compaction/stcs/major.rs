@@ -22,6 +22,7 @@ use crate::compaction::{
     CompactionError, CompactionResult, MergeIterator, finalize_compaction, full_range_scan_iters,
 };
 use crate::engine::EngineConfig;
+use crate::engine::RangeTombstone;
 use crate::engine::utils::Record;
 use crate::manifest::Manifest;
 use crate::sstable::{MemtablePointEntry, SSTable};
@@ -83,16 +84,9 @@ fn execute(
 
     // Phase 1: Collect all range tombstones upfront from all SSTables.
     // We need them before processing point entries so we can check coverage.
-    let mut all_range_tombstones: Vec<RangeTombstoneEntry> = Vec::new();
+    let mut all_range_tombstones: Vec<RangeTombstone> = Vec::new();
     for sst in sstables {
-        for (start, end, lsn, timestamp) in sst.range_tombstone_iter() {
-            all_range_tombstones.push(RangeTombstoneEntry {
-                start: start.to_vec(),
-                end: end.to_vec(),
-                lsn,
-                timestamp,
-            });
-        }
+        all_range_tombstones.extend(sst.range_tombstone_iter());
     }
 
     // Phase 2: Create merge iterator over all SSTables.
@@ -160,22 +154,9 @@ fn execute(
 // Range tombstone helpers
 // ------------------------------------------------------------------------------------------------
 
-/// A range tombstone entry collected during the pre-scan phase.
-struct RangeTombstoneEntry {
-    start: Vec<u8>,
-    end: Vec<u8>,
-    lsn: u64,
-    #[allow(dead_code)]
-    timestamp: u64,
-}
-
 /// Returns `true` if the given key+lsn is suppressed by any range
 /// tombstone with a strictly higher LSN.
-fn is_suppressed_by_range(
-    key: &[u8],
-    put_lsn: u64,
-    range_tombstones: &[RangeTombstoneEntry],
-) -> bool {
+fn is_suppressed_by_range(key: &[u8], put_lsn: u64, range_tombstones: &[RangeTombstone]) -> bool {
     for rt in range_tombstones {
         if key >= rt.start.as_slice() && key < rt.end.as_slice() && rt.lsn > put_lsn {
             return true;

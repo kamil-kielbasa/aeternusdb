@@ -61,7 +61,7 @@ use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableGetResult
 use crate::sstable::{self, SSTable, SSTableError};
 
 pub mod utils;
-pub use utils::Record;
+pub use utils::{RangeTombstone, Record};
 
 #[cfg(test)]
 mod tests;
@@ -702,7 +702,7 @@ impl Engine {
                     lsn,
                     timestamp,
                 } => {
-                    range_tombstones.push(sstable::MemtableRangeTombstone {
+                    range_tombstones.push(RangeTombstone {
                         start,
                         end,
                         lsn,
@@ -917,18 +917,6 @@ where
             active_ranges: Vec::new(),
         }
     }
-}
-
-/// An in-memory range tombstone covering keys in `[start, end)`.
-struct RangeTombstone {
-    /// Inclusive start key.
-    start: Vec<u8>,
-    /// Exclusive end key.
-    end: Vec<u8>,
-    /// Log sequence number of this tombstone.
-    lsn: u64,
-    /// Timestamp of this tombstone.
-    timestamp: u64,
 }
 
 impl<I> Iterator for VisibilityFilter<I>

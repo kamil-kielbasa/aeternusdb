@@ -36,9 +36,10 @@
 
 pub mod stcs;
 
+use crate::engine::RangeTombstone;
 pub use crate::engine::utils::MergeIterator;
 use crate::engine::utils::Record;
-use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, SSTable, SSTableError};
+use crate::sstable::{self, MemtablePointEntry, SSTable, SSTableError};
 
 use crate::engine::{EngineConfig, SSTABLE_DIR};
 use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
@@ -76,18 +77,18 @@ pub trait CompactionStrategy {
 
 /// Selects which compaction strategy family the engine should use.
 ///
-/// Stored in [`EngineConfig`] and used by the engine to obtain the
-/// concrete [`CompactionStrategy`] implementations for minor, tombstone,
+/// Stored in [`DbConfig`](crate::DbConfig) and used by the engine to
+/// obtain the concrete strategy implementations for minor, tombstone,
 /// and major compaction.
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use aeternusdb::compaction::CompactionStrategyType;
+/// ```rust
+/// use aeternusdb::{DbConfig, CompactionStrategyType};
 ///
-/// let config = EngineConfig {
+/// let config = DbConfig {
 ///     compaction_strategy: CompactionStrategyType::Stcs,
-///     ..default_config()
+///     ..DbConfig::default()
 /// };
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +153,7 @@ pub struct CompactionResult {
 /// for minor compaction where other SSTables may hold covered data.
 pub fn dedup_records(
     merge_iter: impl Iterator<Item = Record>,
-) -> (Vec<MemtablePointEntry>, Vec<MemtableRangeTombstone>) {
+) -> (Vec<MemtablePointEntry>, Vec<RangeTombstone>) {
     let mut point_entries = Vec::new();
     let mut range_tombstones = Vec::new();
     let mut last_key: Option<Vec<u8>> = None;
@@ -165,7 +166,7 @@ pub fn dedup_records(
                 lsn,
                 timestamp,
             } => {
-                range_tombstones.push(MemtableRangeTombstone {
+                range_tombstones.push(RangeTombstone {
                     start,
                     end,
                     lsn,
@@ -289,7 +290,7 @@ pub(crate) fn finalize_compaction(
     data_dir: &str,
     removed_ids: Vec<u64>,
     point_entries: Vec<MemtablePointEntry>,
-    range_tombstones: Vec<MemtableRangeTombstone>,
+    range_tombstones: Vec<RangeTombstone>,
 ) -> Result<CompactionResult, CompactionError> {
     use std::fs;
     use std::path::PathBuf;

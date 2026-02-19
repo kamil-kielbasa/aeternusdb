@@ -1,10 +1,14 @@
-//! Engine utilities — shared record types and merge primitives.
+//! Engine utilities — shared record types, tombstones, and merge primitives.
 //!
-//! This module defines [`Record`], the unified representation of a point
-//! put, point delete, or range delete used across all engine layers
-//! (memtable, SSTable, compaction, scan), and [`MergeIterator`], a
-//! heap-based k-way merge iterator that combines multiple sorted record
-//! streams into a single globally-sorted stream.
+//! This module defines:
+//!
+//! - [`Record`] — the unified representation of a point put, point delete,
+//!   or range delete used across all engine layers (memtable, SSTable,
+//!   compaction, scan).
+//! - [`RangeTombstone`] — a versioned range deletion marker shared across
+//!   memtable, SSTable, and compaction subsystems.
+//! - [`MergeIterator`] — a heap-based k-way merge iterator that combines
+//!   multiple sorted record streams into a single globally-sorted stream.
 
 /// Represents a single item emitted by the storage engine.
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -93,6 +97,32 @@ pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
         std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()),
         other => other,
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// RangeTombstone — shared across all layers
+// ------------------------------------------------------------------------------------------------
+
+/// A range tombstone that logically deletes all keys in `[start, end)`.
+///
+/// Range tombstones are versioned via LSN and may overlap. During reads,
+/// the highest-LSN tombstone covering a key takes precedence.
+///
+/// This type is shared across the memtable, SSTable, and compaction
+/// subsystems.
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+pub struct RangeTombstone {
+    /// Inclusive start key of the deleted range.
+    pub start: Vec<u8>,
+
+    /// Exclusive end key of the deleted range.
+    pub end: Vec<u8>,
+
+    /// Log Sequence Number of this tombstone.
+    pub lsn: u64,
+
+    /// Timestamp associated with this mutation.
+    pub timestamp: u64,
 }
 
 // ------------------------------------------------------------------------------------------------

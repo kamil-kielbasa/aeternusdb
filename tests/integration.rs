@@ -38,6 +38,7 @@ fn small_buffer_config() -> DbConfig {
         max_compaction_threshold: 32,
         tombstone_compaction_ratio: 0.3,
         thread_pool_size: 2,
+        ..DbConfig::default()
     }
 }
 

@@ -172,7 +172,7 @@
 //! sorted streams:
 //!
 //! - **Point entries** (`MemtablePointEntry`): key/value pairs or point tombstones.
-//! - **Range tombstones** (`MemtableRangeTombstone`): delete intervals covering key ranges.
+//! - **Range tombstones** ([`RangeTombstone`](crate::engine::RangeTombstone)): delete intervals covering key ranges.
 //!
 //! The function [`build_from_iterators`] consumes both iterators in sorted order and
 //! produces a fully-structured SSTable containing:
@@ -553,17 +553,17 @@ impl SSTable {
         }
     }
 
-    /// Returns an iterator over the range tombstones stored in this SSTable,
-    /// yielding `(start_key, end_key, lsn, timestamp)` tuples.
-    pub fn range_tombstone_iter(&self) -> impl Iterator<Item = (&[u8], &[u8], u64, u64)> {
-        self.range_deletes.data.iter().map(|rd| {
-            (
-                rd.start_key.as_slice(),
-                rd.end_key.as_slice(),
-                rd.lsn,
-                rd.timestamp,
-            )
-        })
+    /// Returns an iterator over the range tombstones stored in this SSTable.
+    pub fn range_tombstone_iter(&self) -> impl Iterator<Item = crate::engine::RangeTombstone> + '_ {
+        self.range_deletes
+            .data
+            .iter()
+            .map(|rd| crate::engine::RangeTombstone {
+                start: rd.start_key.clone(),
+                end: rd.end_key.clone(),
+                lsn: rd.lsn,
+                timestamp: rd.timestamp,
+            })
     }
 
     /// Opens an SSTable from disk, verifies its integrity, and loads all top-level
@@ -1425,20 +1425,9 @@ pub struct MemtablePointEntry {
 }
 
 /// A range deletion covering keys in the interval `[start, end)`.
-#[derive(Debug, Clone)]
-pub struct MemtableRangeTombstone {
-    /// Inclusive start key of the range.
-    pub start: Vec<u8>,
-
-    /// Exclusive end key of the range.
-    pub end: Vec<u8>,
-
-    /// Log sequence number of this range deletion.
-    pub lsn: u64,
-
-    /// Timestamp associated with this mutation.
-    pub timestamp: u64,
-}
+///
+/// This is a type alias for the crate-wide [`RangeTombstone`](crate::engine::RangeTombstone).
+pub type MemtableRangeTombstone = crate::engine::RangeTombstone;
 
 // ------------------------------------------------------------------------------------------------
 // SSTable builder
@@ -1459,7 +1448,7 @@ pub struct MemtableRangeTombstone {
 /// - `point_entries_count`: Expected number of point entries (used to size bloom filter).
 /// - `point_entries`: Iterator yielding [`MemtablePointEntry`] in sorted order.
 /// - `range_tombstones_count`: Expected number of range tombstones.
-/// - `range_tombstones`: Iterator yielding [`MemtableRangeTombstone`] in sorted order.
+/// - `range_tombstones`: Iterator yielding [`RangeTombstone`](crate::engine::RangeTombstone) in sorted order.
 ///
 /// # Input Requirements
 ///

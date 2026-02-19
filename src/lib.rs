@@ -61,6 +61,10 @@ use tracing::{debug, error, info};
 /// A single key-value pair returned by [`Db::scan`].
 pub type KeyValue = (Vec<u8>, Vec<u8>);
 
+/// Re-export the compaction strategy selector so callers can configure it
+/// without reaching into internal modules.
+pub use compaction::CompactionStrategyType;
+
 // ------------------------------------------------------------------------------------------------
 // Configuration
 // ------------------------------------------------------------------------------------------------
@@ -91,29 +95,70 @@ pub struct DbConfig {
     /// When the buffer is full, it is frozen and flushed to an SSTable
     /// in the background.
     ///
-    /// Default: 64 KiB. Must be ≥ 1024.
+    /// **Bounds:** 1 024 ≤ `write_buffer_size` ≤ 268 435 456 (256 MiB).
+    ///
+    /// Default: `65 536` (64 KiB).
     pub write_buffer_size: usize,
+
+    /// Compaction strategy family.
+    ///
+    /// Determines how SSTables are grouped and merged during minor,
+    /// tombstone, and major compaction.
+    ///
+    /// Default: [`CompactionStrategyType::Stcs`] (Size-Tiered).
+    pub compaction_strategy: CompactionStrategyType,
 
     /// Minimum number of similarly-sized SSTables required to trigger
     /// background minor compaction.
     ///
-    /// Default: 4. Must be ≥ 2.
+    /// **Bounds:** 2 ≤ `min_compaction_threshold` ≤ 64.
+    ///
+    /// Default: `4`.
     pub min_compaction_threshold: usize,
 
     /// Maximum number of SSTables to merge in a single minor compaction.
     ///
-    /// Default: 32. Must be ≥ `min_compaction_threshold`.
+    /// **Bounds:** `min_compaction_threshold` ≤ `max_compaction_threshold` ≤ 256.
+    ///
+    /// Default: `32`.
     pub max_compaction_threshold: usize,
 
     /// Tombstone-to-total-record ratio that triggers background tombstone
     /// compaction on an SSTable.
     ///
-    /// Default: 0.3. Must be in (0.0, 1.0].
+    /// **Bounds:** 0.0 < `tombstone_compaction_ratio` ≤ 1.0.
+    ///
+    /// Default: `0.3`.
     pub tombstone_compaction_ratio: f64,
+
+    /// Minimum SSTable age (in seconds) before it is eligible for
+    /// tombstone compaction. Set to `0` to disable the age gate.
+    ///
+    /// **Bounds:** 0 ≤ `tombstone_compaction_interval` ≤ 604 800 (7 days).
+    ///
+    /// Default: `0` (no minimum age).
+    pub tombstone_compaction_interval: usize,
+
+    /// When `true`, tombstone compaction resolves bloom filter false
+    /// positives by performing an actual `get()` against older SSTables
+    /// for each point tombstone. This enables more aggressive tombstone
+    /// removal at the cost of extra I/O.
+    ///
+    /// Default: `true`.
+    pub tombstone_bloom_fallback: bool,
+
+    /// When `true`, tombstone compaction scans older SSTables to check
+    /// whether a range tombstone still covers any live keys, allowing
+    /// aggressive range tombstone removal.
+    ///
+    /// Default: `true`.
+    pub tombstone_range_drop: bool,
 
     /// Number of background worker threads for flushing and compaction.
     ///
-    /// Default: 2. Must be ≥ 1.
+    /// **Bounds:** 1 ≤ `thread_pool_size` ≤ 32.
+    ///
+    /// Default: `2`.
     pub thread_pool_size: usize,
 }
 
@@ -121,30 +166,36 @@ impl Default for DbConfig {
     fn default() -> Self {
         Self {
             write_buffer_size: 64 * 1024,
+            compaction_strategy: CompactionStrategyType::Stcs,
             min_compaction_threshold: 4,
             max_compaction_threshold: 32,
             tombstone_compaction_ratio: 0.3,
+            tombstone_compaction_interval: 0,
+            tombstone_bloom_fallback: true,
+            tombstone_range_drop: true,
             thread_pool_size: 2,
         }
     }
 }
 
 impl DbConfig {
-    /// Validates all configuration parameters.
+    /// Validates all configuration parameters against their documented bounds.
     fn validate(&self) -> Result<(), DbError> {
-        if self.write_buffer_size < 1024 {
+        if self.write_buffer_size < 1024 || self.write_buffer_size > 256 * 1024 * 1024 {
             return Err(DbError::InvalidConfig(
-                "write_buffer_size must be >= 1024".into(),
+                "write_buffer_size must be in [1024, 268435456]".into(),
             ));
         }
-        if self.min_compaction_threshold < 2 {
+        if self.min_compaction_threshold < 2 || self.min_compaction_threshold > 64 {
             return Err(DbError::InvalidConfig(
-                "min_compaction_threshold must be >= 2".into(),
+                "min_compaction_threshold must be in [2, 64]".into(),
             ));
         }
-        if self.max_compaction_threshold < self.min_compaction_threshold {
+        if self.max_compaction_threshold < self.min_compaction_threshold
+            || self.max_compaction_threshold > 256
+        {
             return Err(DbError::InvalidConfig(
-                "max_compaction_threshold must be >= min_compaction_threshold".into(),
+                "max_compaction_threshold must be in [min_compaction_threshold, 256]".into(),
             ));
         }
         if self.tombstone_compaction_ratio <= 0.0 || self.tombstone_compaction_ratio > 1.0 {
@@ -152,9 +203,14 @@ impl DbConfig {
                 "tombstone_compaction_ratio must be in (0.0, 1.0]".into(),
             ));
         }
-        if self.thread_pool_size < 1 {
+        if self.tombstone_compaction_interval > 604_800 {
             return Err(DbError::InvalidConfig(
-                "thread_pool_size must be >= 1".into(),
+                "tombstone_compaction_interval must be in [0, 604800]".into(),
+            ));
+        }
+        if self.thread_pool_size < 1 || self.thread_pool_size > 32 {
+            return Err(DbError::InvalidConfig(
+                "thread_pool_size must be in [1, 32]".into(),
             ));
         }
         Ok(())
@@ -164,16 +220,16 @@ impl DbConfig {
     fn to_engine_config(&self) -> EngineConfig {
         EngineConfig {
             write_buffer_size: self.write_buffer_size,
-            compaction_strategy: compaction::CompactionStrategyType::Stcs,
+            compaction_strategy: self.compaction_strategy,
             bucket_low: 0.5,
             bucket_high: 1.5,
             min_sstable_size: 50,
             min_threshold: self.min_compaction_threshold,
             max_threshold: self.max_compaction_threshold,
             tombstone_ratio_threshold: self.tombstone_compaction_ratio,
-            tombstone_compaction_interval: 0,
-            tombstone_bloom_fallback: true,
-            tombstone_range_drop: true,
+            tombstone_compaction_interval: self.tombstone_compaction_interval,
+            tombstone_bloom_fallback: self.tombstone_bloom_fallback,
+            tombstone_range_drop: self.tombstone_range_drop,
             thread_pool_size: self.thread_pool_size,
         }
     }
@@ -267,8 +323,11 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidConfig`] if any configuration parameter
-    /// is out of range.
+    /// - [`DbError::InvalidConfig`] — a configuration parameter is out of
+    ///   its documented bounds.
+    /// - [`DbError::Engine`] — the directory could not be created, the
+    ///   manifest/WAL could not be opened or replayed, or I/O failed
+    ///   during recovery.
     pub fn open(path: impl AsRef<Path>, config: DbConfig) -> Result<Self, DbError> {
         config.validate()?;
 
@@ -312,6 +371,11 @@ impl Db {
     ///
     /// Subsequent operations on this handle return [`DbError::Closed`].
     /// Calling `close` more than once is harmless.
+    ///
+    /// # Errors
+    ///
+    /// - [`DbError::Engine`] — flush or manifest checkpoint failed
+    ///   during shutdown.
     pub fn close(&self) -> Result<(), DbError> {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(()); // Already closed.
@@ -336,7 +400,9 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidArgument`] if `key` or `value` is empty.
+    /// - [`DbError::Closed`] — the database has been closed.
+    /// - [`DbError::InvalidArgument`] — `key` or `value` is empty.
+    /// - [`DbError::Engine`] — WAL write or memtable operation failed.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), DbError> {
         self.check_open()?;
 
@@ -360,7 +426,9 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidArgument`] if `key` is empty.
+    /// - [`DbError::Closed`] — the database has been closed.
+    /// - [`DbError::InvalidArgument`] — `key` is empty.
+    /// - [`DbError::Engine`] — WAL write or memtable operation failed.
     pub fn delete(&self, key: &[u8]) -> Result<(), DbError> {
         self.check_open()?;
 
@@ -379,8 +447,10 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidArgument`] if `start` or `end` is empty,
-    /// or if `start >= end`.
+    /// - [`DbError::Closed`] — the database has been closed.
+    /// - [`DbError::InvalidArgument`] — `start` or `end` is empty, or
+    ///   `start >= end`.
+    /// - [`DbError::Engine`] — WAL write or memtable operation failed.
     pub fn delete_range(&self, start: &[u8], end: &[u8]) -> Result<(), DbError> {
         self.check_open()?;
 
@@ -412,7 +482,9 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidArgument`] if `key` is empty.
+    /// - [`DbError::Closed`] — the database has been closed.
+    /// - [`DbError::InvalidArgument`] — `key` is empty.
+    /// - [`DbError::Engine`] — SSTable read or I/O failed.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, DbError> {
         self.check_open()?;
 
@@ -432,7 +504,9 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidArgument`] if `start` or `end` is empty.
+    /// - [`DbError::Closed`] — the database has been closed.
+    /// - [`DbError::InvalidArgument`] — `start` or `end` is empty.
+    /// - [`DbError::Engine`] — SSTable read or I/O failed.
     pub fn scan(&self, start: &[u8], end: &[u8]) -> Result<Vec<KeyValue>, DbError> {
         self.check_open()?;
 
@@ -460,6 +534,12 @@ impl Db {
     ///
     /// Returns `true` if compaction was performed, `false` if there
     /// were fewer than 2 SSTables.
+    ///
+    /// # Errors
+    ///
+    /// - [`DbError::Closed`] — the database has been closed.
+    /// - [`DbError::Engine`] — SSTable merge, manifest update, or I/O
+    ///   failed during compaction.
     pub fn major_compact(&self) -> Result<bool, DbError> {
         self.check_open()?;
         Ok(self.engine.major_compact()?)

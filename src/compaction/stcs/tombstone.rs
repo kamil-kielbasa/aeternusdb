@@ -16,10 +16,9 @@
 
 use crate::compaction::{CompactionError, CompactionResult, finalize_compaction};
 use crate::engine::EngineConfig;
+use crate::engine::RangeTombstone;
 use crate::manifest::Manifest;
-use crate::sstable::{
-    MemtablePointEntry, MemtableRangeTombstone, SSTGetResult, SSTable, SSTableError,
-};
+use crate::sstable::{MemtablePointEntry, SSTGetResult, SSTable, SSTableError};
 use tracing::{debug, info, trace};
 
 // ------------------------------------------------------------------------------------------------
@@ -160,12 +159,12 @@ fn execute(
     let scan_iter = target.scan(&min_key, &max_key)?;
 
     let mut point_entries: Vec<MemtablePointEntry> = Vec::new();
-    let mut range_tombstones: Vec<MemtableRangeTombstone> = Vec::new();
+    let mut range_tombstones: Vec<RangeTombstone> = Vec::new();
     // Range tombstones that are candidates for dropping.  We collect
     // them during the scan and resolve them in a second pass once
     // all point entries have been gathered, so we can detect coverage
     // of puts inside the same SSTable.
-    let mut range_candidates: Vec<MemtableRangeTombstone> = Vec::new();
+    let mut range_candidates: Vec<RangeTombstone> = Vec::new();
     let mut last_key: Option<Vec<u8>> = None;
     let mut dropped_anything = false;
 
@@ -225,14 +224,14 @@ fn execute(
                 // Defer the drop decision to a second pass so that we
                 // can check collected point_entries for covered puts.
                 if config.tombstone_range_drop {
-                    range_candidates.push(MemtableRangeTombstone {
+                    range_candidates.push(RangeTombstone {
                         start,
                         end,
                         lsn,
                         timestamp,
                     });
                 } else {
-                    range_tombstones.push(MemtableRangeTombstone {
+                    range_tombstones.push(RangeTombstone {
                         start,
                         end,
                         lsn,
