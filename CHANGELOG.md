@@ -59,6 +59,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 #### Testing
 - ~250 unit tests covering all modules.
 - ~11 stress tests (marked `#[ignore]`) for concurrency, crash recovery, and compaction under load.
+- ~27 integration tests covering library api.
 
 #### CI / CD
 - GitHub Actions CI workflow — `cargo check`, `rustfmt`, `clippy`, `cargo test`.

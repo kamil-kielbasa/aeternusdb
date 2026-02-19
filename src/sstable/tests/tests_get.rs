@@ -5,9 +5,9 @@
 //! These tests verify every precedence combination:
 //!
 //! Coverage:
-//! - Single put → `SSTGetResult::Put`
-//! - Point-delete over put → `SSTGetResult::Delete`
-//! - Range-delete with no point entries → `SSTGetResult::RangeDelete`
+//! - Single put → `GetResult::Put`
+//! - Point-delete over put → `GetResult::Delete`
+//! - Range-delete with no point entries → `GetResult::RangeDelete`
 //! - Point put vs range-delete — point wins (higher LSN)
 //! - Point put vs range-delete — range wins (higher LSN)
 //! - Point-delete vs range-delete — range wins
@@ -20,7 +20,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, SSTGetResult, SSTable};
+    use crate::sstable::{self, GetResult, PointEntry, RangeTombstone, SSTable};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
@@ -31,8 +31,8 @@ mod tests {
             .try_init();
     }
 
-    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: Some(value.to_vec()),
             lsn,
@@ -40,8 +40,8 @@ mod tests {
         }
     }
 
-    fn del(key: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn del(key: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: None,
             lsn,
@@ -49,8 +49,8 @@ mod tests {
         }
     }
 
-    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> MemtableRangeTombstone {
-        MemtableRangeTombstone {
+    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> RangeTombstone {
+        RangeTombstone {
             start: start.to_vec(),
             end: end.to_vec(),
             lsn,
@@ -72,7 +72,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::Put { value: "val1", lsn: 10, timestamp: 100 }`.
+    /// `GetResult::Put { value: "val1", lsn: 10, timestamp: 100 }`.
     #[test]
     fn get_single_put() {
         init_tracing();
@@ -81,21 +81,20 @@ mod tests {
         let path = tmp.path().join("sst_single_put.bin");
 
         let points = vec![point(b"a", b"val1", 10, 100)];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::Put {
+            GetResult::Put {
                 value: b"val1".to_vec(),
                 lsn: 10,
                 timestamp: 100
@@ -117,7 +116,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::Delete { lsn: 20, timestamp: 110 }`.
+    /// `GetResult::Delete { lsn: 20, timestamp: 110 }`.
     #[test]
     fn get_point_delete() {
         init_tracing();
@@ -126,21 +125,20 @@ mod tests {
         let path = tmp.path().join("sst_point_delete.bin");
 
         let points = vec![point(b"a", b"val1", 10, 100), del(b"a", 20, 110)];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::Delete {
+            GetResult::Delete {
                 lsn: 20,
                 timestamp: 110
             }
@@ -162,7 +160,7 @@ mod tests {
     /// 1. `sst.get(b"m")` — key inside the range.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::RangeDelete { lsn: 30, timestamp: 200 }`.
+    /// `GetResult::RangeDelete { lsn: 30, timestamp: 200 }`.
     #[test]
     fn get_range_delete_only() {
         init_tracing();
@@ -173,19 +171,18 @@ mod tests {
         let points = vec![];
         let ranges = vec![rdel(b"a", b"z", 30, 200)];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         assert_eq!(
             sst.get(b"m").unwrap(),
-            SSTGetResult::RangeDelete {
+            GetResult::RangeDelete {
                 lsn: 30,
                 timestamp: 200
             }
@@ -207,7 +204,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::Put { value: "val1", lsn: 50, timestamp: 100 }`.
+    /// `GetResult::Put { value: "val1", lsn: 50, timestamp: 100 }`.
     #[test]
     fn get_point_and_range_delete_point_wins() {
         init_tracing();
@@ -218,19 +215,18 @@ mod tests {
         let points = vec![point(b"a", b"val1", 50, 100)];
         let ranges = vec![rdel(b"a", b"z", 40, 90)];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::Put {
+            GetResult::Put {
                 value: b"val1".to_vec(),
                 lsn: 50,
                 timestamp: 100
@@ -252,7 +248,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::RangeDelete { lsn: 60, timestamp: 110 }`.
+    /// `GetResult::RangeDelete { lsn: 60, timestamp: 110 }`.
     #[test]
     fn get_point_and_range_delete_range_wins() {
         init_tracing();
@@ -263,19 +259,18 @@ mod tests {
         let points = vec![point(b"a", b"val1", 50, 100)];
         let ranges = vec![rdel(b"a", b"z", 60, 110)];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::RangeDelete {
+            GetResult::RangeDelete {
                 lsn: 60,
                 timestamp: 110
             }
@@ -297,7 +292,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::RangeDelete { lsn: 60, timestamp: 110 }`.
+    /// `GetResult::RangeDelete { lsn: 60, timestamp: 110 }`.
     #[test]
     fn get_point_delete_and_range_delete_range_wins() {
         init_tracing();
@@ -312,20 +307,19 @@ mod tests {
             rdel(b"a", b"z", 60, 110), // range delete with newer LSN
         ];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         // Range delete wins because its LSN is higher
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::RangeDelete {
+            GetResult::RangeDelete {
                 lsn: 60,
                 timestamp: 110
             }
@@ -347,7 +341,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::Delete { lsn: 70, timestamp: 120 }`.
+    /// `GetResult::Delete { lsn: 70, timestamp: 120 }`.
     #[test]
     fn get_point_delete_and_range_delete_point_wins() {
         init_tracing();
@@ -362,20 +356,19 @@ mod tests {
             rdel(b"a", b"z", 60, 110), // older range delete
         ];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         // Point delete wins because its LSN is higher
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::Delete {
+            GetResult::Delete {
                 lsn: 70,
                 timestamp: 120
             }
@@ -398,7 +391,7 @@ mod tests {
     /// 1. `sst.get(b"a")`.
     ///
     /// # Expected behavior
-    /// `SSTGetResult::Put { value: "v2", lsn: 20, timestamp: 120 }`.
+    /// `GetResult::Put { value: "v2", lsn: 20, timestamp: 120 }`.
     #[test]
     fn get_multiple_versions_point_pick_max_lsn() {
         init_tracing();
@@ -411,21 +404,20 @@ mod tests {
             point(b"a", b"v2", 20, 120),
             point(b"a", b"v3", 15, 110),
         ];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
         let sst = SSTable::open(&path).unwrap();
 
         assert_eq!(
             sst.get(b"a").unwrap(),
-            SSTGetResult::Put {
+            GetResult::Put {
                 value: b"v2".to_vec(),
                 lsn: 20,
                 timestamp: 120

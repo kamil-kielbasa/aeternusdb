@@ -100,6 +100,30 @@ pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
 }
 
 // ------------------------------------------------------------------------------------------------
+// PointEntry — input type for SSTable construction
+// ------------------------------------------------------------------------------------------------
+
+/// A point mutation to be written into an SSTable: a Put or Delete.
+///
+/// This is the common currency type used when flushing memtables and
+/// compacting SSTables. It is intentionally simpler than [`Record`] —
+/// range deletes travel separately as [`RangeTombstone`] values.
+#[derive(Debug, Clone)]
+pub struct PointEntry {
+    /// Key of the entry.
+    pub key: Vec<u8>,
+
+    /// Value of the entry; `None` indicates a point deletion.
+    pub value: Option<Vec<u8>>,
+
+    /// Log sequence number of this mutation.
+    pub lsn: u64,
+
+    /// Timestamp associated with this mutation.
+    pub timestamp: u64,
+}
+
+// ------------------------------------------------------------------------------------------------
 // RangeTombstone — shared across all layers
 // ------------------------------------------------------------------------------------------------
 

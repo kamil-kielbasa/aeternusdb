@@ -18,7 +18,7 @@ use crate::compaction::{CompactionError, CompactionResult, finalize_compaction};
 use crate::engine::EngineConfig;
 use crate::engine::RangeTombstone;
 use crate::manifest::Manifest;
-use crate::sstable::{MemtablePointEntry, SSTGetResult, SSTable, SSTableError};
+use crate::sstable::{GetResult, PointEntry, SSTable, SSTableError};
 use tracing::{debug, info, trace};
 
 // ------------------------------------------------------------------------------------------------
@@ -158,7 +158,7 @@ fn execute(
 
     let scan_iter = target.scan(&min_key, &max_key)?;
 
-    let mut point_entries: Vec<MemtablePointEntry> = Vec::new();
+    let mut point_entries: Vec<PointEntry> = Vec::new();
     let mut range_tombstones: Vec<RangeTombstone> = Vec::new();
     // Range tombstones that are candidates for dropping.  We collect
     // them during the scan and resolve them in a second pass once
@@ -182,7 +182,7 @@ fn execute(
                     continue;
                 }
                 last_key = Some(key.clone());
-                point_entries.push(MemtablePointEntry {
+                point_entries.push(PointEntry {
                     key,
                     value: Some(value),
                     lsn,
@@ -208,7 +208,7 @@ fn execute(
                     continue;
                 }
 
-                point_entries.push(MemtablePointEntry {
+                point_entries.push(PointEntry {
                     key,
                     value: None,
                     lsn,
@@ -314,8 +314,8 @@ fn can_drop_point_tombstone(
             // Resolve the false positive via actual get().
             let result = sst.get(key)?;
             match result {
-                SSTGetResult::NotFound => continue, // false positive → safe
-                _ => return Ok(false),              // actually present → keep tombstone
+                GetResult::NotFound => continue, // false positive → safe
+                _ => return Ok(false),           // actually present → keep tombstone
             }
         } else {
             // Without fallback scan, we must conservatively keep the tombstone.

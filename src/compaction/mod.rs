@@ -39,7 +39,7 @@ pub mod stcs;
 use crate::engine::RangeTombstone;
 pub use crate::engine::utils::MergeIterator;
 use crate::engine::utils::Record;
-use crate::sstable::{self, MemtablePointEntry, SSTable, SSTableError};
+use crate::sstable::{self, PointEntry, SSTable, SSTableError};
 
 use crate::engine::{EngineConfig, SSTABLE_DIR};
 use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
@@ -153,7 +153,7 @@ pub struct CompactionResult {
 /// for minor compaction where other SSTables may hold covered data.
 pub fn dedup_records(
     merge_iter: impl Iterator<Item = Record>,
-) -> (Vec<MemtablePointEntry>, Vec<RangeTombstone>) {
+) -> (Vec<PointEntry>, Vec<RangeTombstone>) {
     let mut point_entries = Vec::new();
     let mut range_tombstones = Vec::new();
     let mut last_key: Option<Vec<u8>> = None;
@@ -183,7 +183,7 @@ pub fn dedup_records(
                     continue; // Older version — skip
                 }
                 last_key = Some(key.clone());
-                point_entries.push(MemtablePointEntry {
+                point_entries.push(PointEntry {
                     key,
                     value: Some(value),
                     lsn,
@@ -199,7 +199,7 @@ pub fn dedup_records(
                     continue; // Older version — skip
                 }
                 last_key = Some(key.clone());
-                point_entries.push(MemtablePointEntry {
+                point_entries.push(PointEntry {
                     key,
                     value: None,
                     lsn,
@@ -289,7 +289,7 @@ pub(crate) fn finalize_compaction(
     manifest: &mut Manifest,
     data_dir: &str,
     removed_ids: Vec<u64>,
-    point_entries: Vec<MemtablePointEntry>,
+    point_entries: Vec<PointEntry>,
     range_tombstones: Vec<RangeTombstone>,
 ) -> Result<CompactionResult, CompactionError> {
     use std::fs;
@@ -333,12 +333,11 @@ pub(crate) fn finalize_compaction(
         "finalize: building new SSTable"
     );
 
-    sstable::build_from_iterators(
-        &new_sst_path,
-        point_count,
+    sstable::SstWriter::new(&new_sst_path).build(
         point_entries.into_iter(),
-        range_count,
+        point_count,
         range_tombstones.into_iter(),
+        range_count,
     )?;
 
     // Atomic manifest update: add new, remove old.

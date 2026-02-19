@@ -17,7 +17,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, SSTable, SSTableError};
+    use crate::sstable::{self, PointEntry, RangeTombstone, SSTable, SSTableError};
     use bloomfilter::Bloom;
     use std::fs;
     use tempfile::TempDir;
@@ -30,8 +30,8 @@ mod tests {
             .try_init();
     }
 
-    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: Some(value.to_vec()),
             lsn,
@@ -39,8 +39,8 @@ mod tests {
         }
     }
 
-    fn del(key: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn del(key: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: None,
             lsn,
@@ -48,8 +48,8 @@ mod tests {
         }
     }
 
-    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> MemtableRangeTombstone {
-        MemtableRangeTombstone {
+    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> RangeTombstone {
+        RangeTombstone {
             start: start.to_vec(),
             end: end.to_vec(),
             lsn,
@@ -100,14 +100,18 @@ mod tests {
             rdel(b"orange", b"plum", 6, 120),
         ];
 
-        sstable::build_from_iterators(
-            &sstable_path,
-            point_entries.len(),
-            point_entries.into_iter(),
-            range_tombstones.len(),
-            range_tombstones.into_iter(),
-        )
-        .expect("Failed to build SSTable");
+        let pt_count = point_entries.len();
+
+        let rt_count = range_tombstones.len();
+
+        sstable::SstWriter::new(&sstable_path)
+            .build(
+                point_entries.into_iter(),
+                pt_count,
+                range_tombstones.into_iter(),
+                rt_count,
+            )
+            .expect("Failed to build SSTable");
 
         let meta = fs::metadata(&sstable_path).unwrap();
         assert!(meta.len() > 128, "SSTable should be non-trivial in size");
@@ -198,14 +202,11 @@ mod tests {
         let points = vec![];
         let ranges = vec![];
 
-        let result = sstable::build_from_iterators(
-            &sstable_path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap_err();
+        let pt_count = points.len();
+        let rt_count = ranges.len();
+        let result = sstable::SstWriter::new(&sstable_path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap_err();
 
         assert!(matches!(result, SSTableError::Internal(_)));
         assert!(
@@ -243,14 +244,18 @@ mod tests {
         let points = vec![];
         let ranges = vec![rdel(b"a", b"f", 30, 200), rdel(b"f", b"z", 31, 201)];
 
-        sstable::build_from_iterators(
-            &sstable_path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&sstable_path)
+            .build(
+                points.into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
         let sst = SSTable::open(&sstable_path).unwrap();
 
         assert_eq!(sst.properties.record_count, 0);
@@ -295,14 +300,18 @@ mod tests {
         ];
         let ranges = vec![];
 
-        sstable::build_from_iterators(
-            &sstable_path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&sstable_path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&sstable_path).unwrap();
 

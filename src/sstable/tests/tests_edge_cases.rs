@@ -6,7 +6,7 @@
 //!
 //! Coverage:
 //! - `get()` for a key that has no entry and no covering range-delete
-//!   → `SSTGetResult::NotFound`
+//!   → `GetResult::NotFound`
 //! - Bloom filter rejects absent keys (skips data block search)
 //! - Corrupted SSTable file (flipped bytes) → error on `open()`
 //! - Multi-block SSTable with many entries across block boundaries
@@ -20,9 +20,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::sstable::{
-        self, MemtablePointEntry, MemtableRangeTombstone, Record, SSTGetResult, SSTable,
-    };
+    use crate::sstable::{self, GetResult, PointEntry, RangeTombstone, Record, SSTable};
     use std::fs;
     use tempfile::TempDir;
     use tracing::Level;
@@ -34,8 +32,8 @@ mod tests {
             .try_init();
     }
 
-    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: Some(value.to_vec()),
             lsn,
@@ -43,8 +41,8 @@ mod tests {
         }
     }
 
-    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> MemtableRangeTombstone {
-        MemtableRangeTombstone {
+    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> RangeTombstone {
+        RangeTombstone {
             start: start.to_vec(),
             end: end.to_vec(),
             lsn,
@@ -68,7 +66,7 @@ mod tests {
     /// 2. `sst.get(b"z")` — key beyond all entries.
     ///
     /// # Expected behavior
-    /// Both return `SSTGetResult::NotFound`.
+    /// Both return `GetResult::NotFound`.
     #[test]
     fn get_nonexistent_key_returns_not_found() {
         init_tracing();
@@ -81,21 +79,20 @@ mod tests {
             point(b"c", b"3", 11, 101),
             point(b"e", b"5", 12, 102),
         ];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
 
-        assert_eq!(sst.get(b"b").unwrap(), SSTGetResult::NotFound);
-        assert_eq!(sst.get(b"z").unwrap(), SSTGetResult::NotFound);
+        assert_eq!(sst.get(b"b").unwrap(), GetResult::NotFound);
+        assert_eq!(sst.get(b"z").unwrap(), GetResult::NotFound);
     }
 
     // ----------------------------------------------------------------
@@ -114,7 +111,7 @@ mod tests {
     /// 2. `sst.get(b"elderberry")` — absent key.
     ///
     /// # Expected behavior
-    /// Both return `SSTGetResult::NotFound`. (The bloom filter may or may
+    /// Both return `GetResult::NotFound`. (The bloom filter may or may
     /// not reject — this test verifies the semantic result is correct
     /// regardless of bloom false-positive behaviour.)
     #[test]
@@ -129,24 +126,23 @@ mod tests {
             point(b"banana", b"yellow", 2, 101),
             point(b"cherry", b"dark-red", 3, 102),
         ];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
 
         // These keys were never inserted — bloom should (usually) reject them.
         // Either way, the result must be NotFound.
-        assert_eq!(sst.get(b"dragonfruit").unwrap(), SSTGetResult::NotFound);
-        assert_eq!(sst.get(b"elderberry").unwrap(), SSTGetResult::NotFound);
-        assert_eq!(sst.get(b"zebra_fruit").unwrap(), SSTGetResult::NotFound);
+        assert_eq!(sst.get(b"dragonfruit").unwrap(), GetResult::NotFound);
+        assert_eq!(sst.get(b"elderberry").unwrap(), GetResult::NotFound);
+        assert_eq!(sst.get(b"zebra_fruit").unwrap(), GetResult::NotFound);
     }
 
     // ----------------------------------------------------------------
@@ -175,16 +171,15 @@ mod tests {
         let path = tmp.path().join("sst_corrupt.bin");
 
         let points = vec![point(b"a", b"1", 1, 100), point(b"b", b"2", 2, 101)];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
 
         // Corrupt the header region
         let mut bytes = fs::read(&path).unwrap();
@@ -228,7 +223,7 @@ mod tests {
 
         let num_entries = 500;
 
-        let points: Vec<MemtablePointEntry> = (0..num_entries)
+        let points: Vec<PointEntry> = (0..num_entries)
             .map(|i| {
                 let key = format!("key_{:06}", i).into_bytes();
                 // Value large enough to push total beyond 4096-byte block boundary
@@ -237,16 +232,15 @@ mod tests {
             })
             .collect();
 
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
 
@@ -261,7 +255,7 @@ mod tests {
         // First key
         let r = sst.get(b"key_000000").unwrap();
         assert!(
-            matches!(r, SSTGetResult::Put { .. }),
+            matches!(r, GetResult::Put { .. }),
             "First key should be found"
         );
 
@@ -269,7 +263,7 @@ mod tests {
         let mid = format!("key_{:06}", num_entries / 2).into_bytes();
         let r = sst.get(&mid).unwrap();
         assert!(
-            matches!(r, SSTGetResult::Put { .. }),
+            matches!(r, GetResult::Put { .. }),
             "Middle key should be found"
         );
 
@@ -277,12 +271,12 @@ mod tests {
         let last = format!("key_{:06}", num_entries - 1).into_bytes();
         let r = sst.get(&last).unwrap();
         assert!(
-            matches!(r, SSTGetResult::Put { .. }),
+            matches!(r, GetResult::Put { .. }),
             "Last key should be found"
         );
 
         // Nonexistent key between blocks
-        assert_eq!(sst.get(b"key_999999").unwrap(), SSTGetResult::NotFound);
+        assert_eq!(sst.get(b"key_999999").unwrap(), GetResult::NotFound);
 
         // Full scan
         let scanned: Vec<Record> = sst.scan(b"key_", b"key_\xff").unwrap().collect();
@@ -365,16 +359,15 @@ mod tests {
         let path = tmp.path().join("sst_bad_magic.bin");
 
         let points = vec![point(b"a", b"1", 1, 100)];
-        let ranges: Vec<MemtableRangeTombstone> = vec![];
+        let ranges: Vec<RangeTombstone> = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(points.into_iter(), pt_count, ranges.into_iter(), rt_count)
+            .unwrap();
 
         // Overwrite magic bytes
         let mut bytes = fs::read(&path).unwrap();

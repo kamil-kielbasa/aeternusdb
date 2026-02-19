@@ -25,7 +25,7 @@ use crate::engine::EngineConfig;
 use crate::engine::RangeTombstone;
 use crate::engine::utils::Record;
 use crate::manifest::Manifest;
-use crate::sstable::{MemtablePointEntry, SSTable};
+use crate::sstable::{PointEntry, SSTable};
 use tracing::{debug, info, trace};
 
 // ------------------------------------------------------------------------------------------------
@@ -95,7 +95,7 @@ fn execute(
 
     // Phase 3: Process records — dedup point entries, apply range tombstones,
     // drop all tombstones.
-    let mut point_entries: Vec<MemtablePointEntry> = Vec::new();
+    let mut point_entries: Vec<PointEntry> = Vec::new();
     let mut last_key: Option<Vec<u8>> = None;
 
     for record in merge_iter {
@@ -136,7 +136,7 @@ fn execute(
                     continue;
                 }
 
-                point_entries.push(MemtablePointEntry {
+                point_entries.push(PointEntry {
                     key,
                     value: Some(value),
                     lsn,

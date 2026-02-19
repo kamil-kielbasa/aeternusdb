@@ -61,7 +61,7 @@ use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableGetResult
 use crate::sstable::{self, SSTable, SSTableError};
 
 pub mod utils;
-pub use utils::{RangeTombstone, Record};
+pub use utils::{PointEntry, RangeTombstone, Record};
 
 #[cfg(test)]
 mod tests;
@@ -485,7 +485,7 @@ impl Engine {
         //    the best LSN, no subsequent SSTable can beat it, so
         //    we break early.
         // --------------------------------------------------
-        let mut best_sst: Option<sstable::SSTGetResult> = None;
+        let mut best_sst: Option<sstable::GetResult> = None;
         let mut best_lsn: u64 = 0;
 
         for sst in &inner.sstables {
@@ -496,7 +496,7 @@ impl Engine {
             }
 
             match sst.get(&key)? {
-                sstable::SSTGetResult::NotFound => {}
+                sstable::GetResult::NotFound => {}
                 result => {
                     let lsn = result.lsn();
                     if lsn > best_lsn {
@@ -508,10 +508,10 @@ impl Engine {
         }
 
         match best_sst {
-            Some(sstable::SSTGetResult::Put { value, .. }) => Ok(Some(value)),
-            Some(
-                sstable::SSTGetResult::Delete { .. } | sstable::SSTGetResult::RangeDelete { .. },
-            ) => Ok(None),
+            Some(sstable::GetResult::Put { value, .. }) => Ok(Some(value)),
+            Some(sstable::GetResult::Delete { .. } | sstable::GetResult::RangeDelete { .. }) => {
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -677,7 +677,7 @@ impl Engine {
                     lsn,
                     timestamp,
                 } => {
-                    point_entries.push(sstable::MemtablePointEntry {
+                    point_entries.push(PointEntry {
                         key,
                         value: Some(value),
                         lsn,
@@ -689,7 +689,7 @@ impl Engine {
                     lsn,
                     timestamp,
                 } => {
-                    point_entries.push(sstable::MemtablePointEntry {
+                    point_entries.push(PointEntry {
                         key,
                         value: None,
                         lsn,
@@ -723,12 +723,11 @@ impl Engine {
         let point_count = point_entries.len();
         let range_count = range_tombstones.len();
 
-        sstable::build_from_iterators(
-            &sstable_path,
-            point_count,
+        sstable::SstWriter::new(&sstable_path).build(
             point_entries.into_iter(),
-            range_count,
+            point_count,
             range_tombstones.into_iter(),
+            range_count,
         )?;
 
         // Load the newly created SSTable

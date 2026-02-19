@@ -21,7 +21,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::sstable::{self, MemtablePointEntry, MemtableRangeTombstone, Record, SSTable};
+    use crate::sstable::{self, PointEntry, RangeTombstone, Record, SSTable};
     use tempfile::TempDir;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
@@ -32,8 +32,8 @@ mod tests {
             .try_init();
     }
 
-    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn point(key: &[u8], value: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: Some(value.to_vec()),
             lsn,
@@ -41,8 +41,8 @@ mod tests {
         }
     }
 
-    fn del(key: &[u8], lsn: u64, timestamp: u64) -> MemtablePointEntry {
-        MemtablePointEntry {
+    fn del(key: &[u8], lsn: u64, timestamp: u64) -> PointEntry {
+        PointEntry {
             key: key.to_vec(),
             value: None,
             lsn,
@@ -50,8 +50,8 @@ mod tests {
         }
     }
 
-    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> MemtableRangeTombstone {
-        MemtableRangeTombstone {
+    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> RangeTombstone {
+        RangeTombstone {
             start: start.to_vec(),
             end: end.to_vec(),
             lsn,
@@ -90,14 +90,18 @@ mod tests {
 
         let ranges = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
@@ -180,14 +184,18 @@ mod tests {
 
         let ranges = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
@@ -263,14 +271,18 @@ mod tests {
         let points = vec![];
         let ranges = vec![rdel(b"a", b"z", 50, 999)];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
@@ -328,14 +340,18 @@ mod tests {
             rdel(b"b", b"d", 5, 50), // deletes b and c
         ];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
@@ -464,14 +480,18 @@ mod tests {
         let mut ranges = vec![rdel(b"b", b"f", 7, 16), rdel(b"d", b"z", 10, 19)];
         ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.lsn.cmp(&a.lsn)));
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"a", b"z").unwrap().collect();
@@ -666,14 +686,18 @@ mod tests {
         let points = vec![point(b"a", b"1", 1, 10), point(b"b", b"2", 2, 11)];
         let ranges = vec![rdel(b"z", b"zz", 10, 99)];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.clone().into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.clone().into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"a", b"d").unwrap().collect();
@@ -737,14 +761,18 @@ mod tests {
         let points = vec![point(b"d", b"4", 4, 10), point(b"e", b"5", 5, 11)];
         let ranges = vec![rdel(b"a", b"c", 99, 3)];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"d", b"z").unwrap().collect();
@@ -815,14 +843,18 @@ mod tests {
 
         let ranges = vec![];
 
-        sstable::build_from_iterators(
-            &path,
-            points.len(),
-            points.clone().into_iter(),
-            ranges.len(),
-            ranges.into_iter(),
-        )
-        .unwrap();
+        let pt_count = points.len();
+
+        let rt_count = ranges.len();
+
+        sstable::SstWriter::new(&path)
+            .build(
+                points.clone().into_iter(),
+                pt_count,
+                ranges.into_iter(),
+                rt_count,
+            )
+            .unwrap();
 
         let sst = SSTable::open(&path).unwrap();
         let scanned: Vec<Record> = sst.scan(b"c", b"e").unwrap().collect();
