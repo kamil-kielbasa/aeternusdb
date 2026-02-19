@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BYTE_LEN","MAX_VEC_ELEMENTS"],"enum":["EncodingError"],"fn":["decode_from_slice","decode_vec","encode_to_vec","encode_vec","len_to_u32","require"],"trait":["Decode","Encode"]};

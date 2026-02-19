@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["bucket_sstables","select_compaction_bucket"],"mod":["major","minor","tombstone"],"struct":["MajorCompaction","MinorCompaction","TombstoneCompaction"]};

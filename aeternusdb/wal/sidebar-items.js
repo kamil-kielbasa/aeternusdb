@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["U32_SIZE"],"enum":["WalError"],"struct":["Wal","WalHeader","WalIter"],"trait":["WalData"]};

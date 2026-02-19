@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["CompactionStrategyType","DbError"],"mod":["compaction","encoding","engine","manifest","memtable","sstable","wal"],"struct":["BackgroundPool","Db","DbConfig"],"type":["KeyValue"]};

@@ -1,0 +1,34 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="SSTable iterators — block-level and multi-block scan."><title>aeternusdb::sstable::iterator - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="aeternusdb" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.1 (01f6ddf75 2026-02-11)" data-channel="1.93.1" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-a3946164.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../../static.files/main-a410ff4d.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module iterator</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../aeternusdb/index.html">aeternusdb</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module iterator</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#block-iterator" title="Block Iterator">Block Iterator</a></li><li><a href="#scan-iterator" title="Scan Iterator">Scan Iterator</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="../index.html">In aeternusdb::<wbr>sstable</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">aeternusdb</a>::<wbr><a href="../index.html">sstable</a></div><h1>Module <span>iterator</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/aeternusdb/sstable/iterator.rs.html#1-418">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>SSTable iterators — block-level and multi-block scan.</p>
+<p>This module provides two iterator types:</p>
+<ul>
+<li><a href="struct.BlockIterator.html" title="struct aeternusdb::sstable::iterator::BlockIterator"><code>BlockIterator</code></a> — decodes a single data block and yields <a href="struct.BlockEntry.html" title="struct aeternusdb::sstable::iterator::BlockEntry"><code>BlockEntry</code></a>
+values. It supports <code>seek_to_first()</code> and <code>seek_to(key)</code> for positioning.</li>
+<li><a href="struct.ScanIterator.html" title="struct aeternusdb::sstable::iterator::ScanIterator"><code>ScanIterator</code></a> — walks multiple data blocks plus range tombstones,
+yielding a merged stream of <a href="../../engine/utils/enum.Record.html" title="enum aeternusdb::engine::utils::Record"><code>Record</code></a> items in <code>(key ASC, LSN DESC)</code> order.</li>
+</ul>
+<h2 id="block-iterator"><a class="doc-anchor" href="#block-iterator">§</a>Block Iterator</h2>
+<p>The block iterator operates on the raw bytes of a single data block.
+Each entry is an encoded <code>SSTableCell</code> header followed by key and value bytes.</p>
+<div class="example-wrap"><pre class="language-text"><code>[SSTableCell header][KEY_BYTES][VALUE_BYTES]</code></pre></div>
+<p>The header contains fixed-integer-encoded metadata:</p>
+<ul>
+<li><code>key_len</code> (u32)</li>
+<li><code>value_len</code> (u32)</li>
+<li><code>lsn</code> (u64)</li>
+<li><code>timestamp</code> (u64)</li>
+<li><code>is_delete</code> (bool)</li>
+</ul>
+<p>Seeking is linear within a block. Blocks are intentionally small (typically
+4 KiB), so linear search is efficient. If corruption or truncation is
+detected, the iterator treats the block as exhausted.</p>
+<h2 id="scan-iterator"><a class="doc-anchor" href="#scan-iterator">§</a>Scan Iterator</h2>
+<p><a href="struct.ScanIterator.html" title="struct aeternusdb::sstable::iterator::ScanIterator"><code>ScanIterator</code></a> provides a <strong>sorted forward scan</strong> over a single SSTable,
+yielding all point entries (<code>Put</code>, <code>Delete</code>) and range tombstones
+(<code>RangeDelete</code>) that overlap a user-specified key range <code>[start_key, end_key)</code>.</p>
+<p>Blocks are decoded lazily and sequentially. When a block is exhausted, the
+iterator advances to the next one automatically. Range tombstones are
+interleaved with point entries in key order.</p>
+<p>The scan iterator does <strong>not</strong> perform visibility resolution — that is the
+responsibility of upper layers (engine merge iterator, visibility filter).</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.BlockEntry.html" title="struct aeternusdb::sstable::iterator::BlockEntry">Block<wbr>Entry</a></dt><dd>A fully decoded entry from a data block.</dd><dt><a class="struct" href="struct.BlockIterator.html" title="struct aeternusdb::sstable::iterator::BlockIterator">Block<wbr>Iterator</a></dt><dd>Iterator over the entries contained within a single SSTable data block.</dd><dt><a class="struct" href="struct.ScanIterator.html" title="struct aeternusdb::sstable::iterator::ScanIterator">Scan<wbr>Iterator</a></dt><dd>Iterator over all SSTable entries (point or range tombstones)
+within the half-open interval:</dd></dl></section></div></main></body></html>
