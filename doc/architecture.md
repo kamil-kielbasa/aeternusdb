@@ -1,262 +1,211 @@
-# Database Design and Architecture
+# Architecture
 
 ## Overview
-This document outlines the high-level design and architecture of a single-node Log-Structured Merge-Tree (LSM-tree) database implemented in Rust, utilizing the Size-Tiered Compaction Strategy (STCS). The system functions as a key-value store optimized for write-heavy workloads, supporting deletions via tombstones, with optimizations such as bloom filters for key presence checks and a TTL mechanism (`gc_grace_seconds`) for tombstone management.
 
-The design is optimized for single-node operation, with replication noted as a future feature. It prioritizes durability, crash recovery, and write efficiency.
+AeternusDB is a single-node, embeddable key-value storage engine built on a **Log-Structured Merge Tree (LSM-tree)** design. It is written in pure Rust with zero unsafe code in the database layer and uses only stable, well-known crates for serialization, checksumming, and memory mapping.
+
+The engine is optimized for **write-heavy workloads**: writes are sequential appends to a WAL and an in-memory buffer, while reads merge results across multiple layers. Background compaction consolidates on-disk data to bound read amplification.
 
 ## Glossary
 
-| Term             | Definition                                                                                                                |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **LSM-tree**     | Log-Structured Merge-Tree: a write-optimized data structure that appends data to logs and merges sorted files (SSTables). |
-| **SSTable**      | Sorted String Table: immutable, on-disk file containing sorted key-value pairs and tombstones.                            |
-| **WAL**          | Write-Ahead Log: append-only log for durability and crash recovery.                                                       |
-| **Manifest**     | Metadata file tracking all SSTables and system state.                                                                     |
-| **Memtable**     | In-memory buffer (e.g., balanced tree, e.g., B-tree) for recent writes; flushed to disk when full.                        |
-| **Tombstone**    | Deletion marker for a key, with a timestamp (`local_delete_time`).                                                        |
-| **Bloom Filter** | Probabilistic structure to test if a key might exist in an SSTable.                                                       |
-| **STCS**         | Size-Tiered Compaction Strategy: groups SSTables by size for merging.                                                     |
-| **Cell**         | Basic unit of data in SSTables, consisting of key, value, timestamp, flags, and checksum.                                 |
+| Term | Definition |
+|------|------------|
+| **LSM-tree** | Log-Structured Merge Tree — a write-optimized data structure that buffers writes in memory and flushes sorted runs to disk. |
+| **SSTable** | Sorted String Table — an immutable, sorted, on-disk file containing key-value pairs and tombstones. |
+| **WAL** | Write-Ahead Log — an append-only, CRC-protected log that ensures durability before in-memory state is updated. |
+| **Manifest** | Persistent metadata log tracking which SSTables, WALs, and LSNs constitute the current database state. |
+| **Memtable** | In-memory write buffer backed by a `BTreeMap`, holding multiple versions per key ordered by LSN. |
+| **Tombstone** | A deletion marker. Point tombstones delete a single key; range tombstones delete all keys in `[start, end)`. |
+| **Bloom filter** | Probabilistic data structure for fast negative point lookups — if the filter says "no", the key is definitely absent. |
+| **STCS** | Size-Tiered Compaction Strategy — groups SSTables by file size and merges similarly-sized tables. |
+| **LSN** | Log Sequence Number — a monotonically increasing counter assigned to every mutation for version ordering. |
 
-## Configuration Parameters
-
-| Parameter                        | Description                                                                                     | Default       | Notes                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------------------------- | ------------- | ----------------------------------------------------------------- |
-| `write_buffer_size`              | Max memtable size (MB) before flush; threshold for oversized records.                           | 50            | Aligns with SSTable size; handles large records via direct spill. |
-| `bucket_low`                     | Lower bound multiplier for bucket size range ([avg × bucket_low, avg × bucket_high]).           | 0.5           | Lower values widen buckets, reducing count.                       |
-| `bucket_high`                    | Upper bound multiplier for bucket size range.                                                   | 1.5           | Higher values reduce cascading compactions.                       |
-| `min_sstable_size`               | Min size (MB) for regular buckets; smaller go to "small" bucket.                                | 50            | Matches `write_buffer_size`.                                      |
-| `min_threshold`                  | Min SSTables in bucket for minor compaction.                                                    | 4             | Higher delays compaction.                                         |
-| `max_threshold`                  | Max SSTables per minor compaction.                                                              | 32            | Caps I/O load.                                                    |
-| `tombstone_threshold`            | Ratio of droppable tombstones to trigger tombstone compaction.                                  | 0.2           | 20% garbage triggers cleanup.                                     |
-| `tombstone_compaction_interval`  | Min SSTable age (seconds) for tombstone compaction.                                             | 86,400        | Reduce for faster cleanup.                                        |
-| `gc_grace_seconds`               | TTL (seconds) for tombstones; droppable if current_time > local_delete_time + gc_grace_seconds. | 3,600         | Essential for crash recovery and safe partial compactions.        |
-| `local_delete_time`              | Timestamp (Unix seconds) of tombstone creation.                                                 | Set on delete | Used with `gc_grace_seconds`.                                     |
-| `unchecked_tombstone_compaction` | Skip pre-checks for tombstone compaction.                                                       | false         | Enable for aggressive cleanup.                                    |
-| `bloom_fallback_scan`            | Perform full SSTable scan if bloom says "maybe" for tombstone drop.                             | false         | Expensive; use for high-ratio SSTables.                           |
-
-**Why `gc_grace_seconds` is Essential**:
-In single-node mode, it prevents data resurrection during crash recovery (WAL replay) or partial compactions by ensuring tombstones persist until older data is consolidated, maintaining deletion consistency.
-
----
-
-## Database Design and Architecture
-
-### Components
-
-#### In-Memory (RAM)
-
-* **Memtable**: Buffers writes/deletes; flushed when size exceeds `write_buffer_size`.
-* **Page Cache**: Optional LRU cache for SSTable blocks (future).
-
-#### On-Disk
-
-* **WAL**: Appends operations for durability.
-* **SSTables**: Immutable sorted files with key-value pairs, tombstones, metadata (size, creation time, tombstone count, key range), and persisted bloom filters.
-* **Manifest**: Tracks SSTables and system state.
-
-### Core Flow
-
-1. **Write Path**
-
-   * Append to WAL (key, value, timestamp, type: put/delete).
-   * If record size ≤ `write_buffer_size`: Insert into memtable.
-   * If record size > `write_buffer_size`:
-
-     * Flush current memtable (if non-empty).
-     * Write record to a special SSTable (single-entry, with bloom filter and metadata).
-     * Add to manifest.
-   * Acknowledge success.
-
-2. **Read Path**
-
-   * Query memtable, then SSTables (newest first) using bloom filters.
-   * Merge results (latest wins).
-
-3. **Compaction**
-
-   * Background merges to consolidate SSTables and drop tombstones (see Compaction Scenarios).
-
-4. **Recovery**
-
-   * Replay WAL to rebuild memtable; load manifest.
-
-### Architecture Diagram
+## Architecture Diagram
 
 ```text
-+-------------------+
-|    Client API     |
-|  PUT/GET/DELETE   |
-+-------------------+
-         |
-         v
-+-------------------+    +-------------------+
-|       WAL         |--->|    Memtable       |
-|   (Append-Only)   |    | (Balanced Tree,   |
-|                   |    |  e.g., B-tree)    |
-+-------------------+    +-------------------+
-                            | Flush
-                            v
-+-------------------+    +-------------------+
-|     SSTables      |<---|     Manifest      |
-| (Immutable +      |    | (SSTable Metadata)|
-|  Bloom Filters)   |    +-------------------+
-|                   |<---| Compaction        |
-+-------------------+    | Scheduler         |
-         ^              +-------------------+
-         | Read
-         | (Miss)
-+-------------------+
-|    Page Cache     |
-|      (LRU)        |
-+-------------------+
-         ^
-         | Crash
-         | Recovery
-+-------------------+
-|  Crash Recovery   |
-| (WAL Replay,      |
-|  Manifest Load)   |
-+-------------------+
+┌───────────────────────────────────────────────────────┐
+│                         Db                            │
+│          (public API + background thread pool)        │
+│                                                       │
+│  ┌──────────────────────────────────────────────────┐ │
+│  │                    Engine                        │ │
+│  │                                                  │ │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌────────┐  │ │
+│  │  │  Active     │  │   Frozen     │  │ SSTs   │  │ │
+│  │  │  Memtable   │  │  Memtables   │  │(disk)  │  │ │
+│  │  │  + WAL      │  │  + WALs      │  │        │  │ │
+│  │  └──────┬──────┘  └──────┬───────┘  └───┬────┘  │ │
+│  │         │ freeze         │ flush        │       │ │
+│  │         └───────►        └──────►       │       │ │
+│  │                                         │       │ │
+│  │  ┌──────────────────────────────────────┘       │ │
+│  │  │  Compaction (STCS)                           │ │
+│  │  │  minor → tombstone → major                   │ │
+│  │  └──────────────────────────────────────────────│ │
+│  │                                                  │ │
+│  │  ┌──────────────────────────────────────────────┐│ │
+│  │  │         Manifest (WAL + snapshot)            ││ │
+│  │  └──────────────────────────────────────────────┘│ │
+│  └──────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────┘
 ```
 
-### Data Layout and Serialization
+## Data Flow
 
-* **Cell format:**
+### Write Path
+
+1. The caller invokes `Db::put(key, value)`.
+2. The `Db` layer validates the input and delegates to `Engine::put()`.
+3. The engine acquires a **write lock** on `EngineInner`.
+4. The active memtable assigns a monotonic **LSN** and appends a `Record::Put` to its **WAL** (with `fsync`).
+5. The entry is inserted into the in-memory `BTreeMap`.
+6. If the memtable exceeds `write_buffer_size`, it returns `FlushRequired`. The engine **freezes** the memtable (swaps in a fresh memtable + WAL) and the `Db` layer dispatches a background flush task.
+
+Point deletes (`delete`) and range deletes (`delete_range`) follow the same path, inserting `Record::Delete` or `Record::RangeDelete` respectively.
+
+### Background Flush & Compaction
+
+When a memtable is frozen, the `Db` submits a task to the background thread pool. The task:
+
+1. **Flushes** the oldest frozen memtable to a new SSTable via `build_from_iterators()` (atomic `.tmp` → rename).
+2. Updates the **manifest** (add SSTable, remove frozen WAL).
+3. Runs one or more rounds of **minor compaction** if any size bucket meets the threshold.
+4. Runs a single pass of **tombstone compaction** if any SSTable exceeds the tombstone ratio threshold.
+
+Major compaction is triggered explicitly by the user via `Db::major_compact()`.
+
+### Read Path — Point Lookup
+
+`Db::get(key)` searches three layers, newest-first:
+
+1. **Active memtable** — resolves the highest-LSN point entry against covering range tombstones.
+2. **Frozen memtables** — same resolution, newest WAL sequence first.
+3. **SSTables** — sorted by `max_lsn` descending. For each SSTable:
+   - Check key range (`min_key..max_key`) — skip if out of range.
+   - Check **bloom filter** — skip if definitely absent.
+   - Binary-search the **index block** to find the data block.
+   - Seek within the data block for the key.
+   - Check **range tombstones** stored in the SSTable.
+   - Track the highest-LSN result. Once an SSTable's `max_lsn` is ≤ the best result's LSN, early-terminate.
+
+### Read Path — Range Scan
+
+`Db::scan(start, end)` creates a **merge iterator** (min-heap) across all layers:
+
+1. Collect scan iterators from: active memtable, frozen memtables, all SSTables.
+2. Feed them into a `MergeIterator` that yields `Record`s in `(key ASC, LSN DESC)` order.
+3. Wrap with a `VisibilityFilter` that applies point and range tombstone semantics to emit only live `(key, value)` pairs.
+
+## Concurrency Model
+
+| Component | Synchronization | Notes |
+|-----------|----------------|-------|
+| `Engine` | `Arc<RwLock<EngineInner>>` | Reads take a shared lock; writes and flushes take an exclusive lock. |
+| `Memtable` | `Arc<RwLock<MemtableInner>>` | WAL appends are serialized via `Arc<Mutex<File>>`. |
+| `Manifest` | `Mutex<ManifestData>` + WAL mutex | All metadata mutations are serialized. |
+| `Db` | Background thread pool via `crossbeam` channel | Flush and compaction tasks run on dedicated threads. Write path dispatches tasks without blocking. |
+
+The write lock on `EngineInner` is held for the duration of a single write or flush operation. Compaction acquires the lock twice: briefly to obtain the strategy, then briefly to install the result. The expensive merge and I/O phase runs without any engine lock.
+
+## Crash Recovery
+
+On `Engine::open()`:
+
+1. **Load manifest** — reads the snapshot (if present) and replays the manifest WAL to reconstruct the set of live SSTables, active WAL, and frozen WALs.
+2. **Replay frozen WALs** — rebuilds each frozen memtable's in-memory state.
+3. **Replay active WAL** — rebuilds the active memtable.
+4. **Open SSTables** — memory-maps each SSTable referenced by the manifest, loads bloom filters and indices.
+5. **Clean up orphans** — deletes any `.sst` files on disk that are not referenced in the manifest (e.g., from a crash during compaction).
+6. **Reconcile LSN** — computes the maximum LSN across all layers and seeds the active memtable's counter to ensure monotonicity.
+
+The design guarantees that no acknowledged write is lost after a crash, and no partial SSTable or manifest update is visible.
+
+## Module Overview
+
+| Module | Responsibility |
+|--------|---------------|
+| `lib.rs` (`Db`) | Public API, input validation, background thread pool management, graceful shutdown. |
+| `engine` | Core LSM engine — open, close, put, get, delete, scan, flush, compact. Owns the `RwLock<EngineInner>`. |
+| `memtable` | In-memory write buffer with multi-version `BTreeMap`, WAL-first writes, point/range tombstone resolution. |
+| `wal` | Generic, CRC-protected, append-only WAL. Used by both the memtable and the manifest. |
+| `sstable` | Immutable on-disk sorted tables. Includes reader, writer (`build_from_iterators`), block iterator, scan iterator, bloom filter, and range tombstone support. |
+| `manifest` | Persistent metadata manager using a WAL + snapshot model. Tracks SSTables, WAL segments, LSN, and SSTable ID allocation. |
+| `compaction` | Trait-based compaction framework with STCS implementation: minor (bucket merge), tombstone (per-SSTable GC), and major (full merge). |
+
+## On-Disk Directory Layout
+
 ```
-+-------------------+-------------------+-------------------+-------------------+
-| key_length (u32)  | key bytes         | value_length (u32)| value bytes       |
-+-------------------+-------------------+-------------------+-------------------+
-| timestamp (u64)   | flags (u8)        | checksum (u32)                        |
-+-------------------+-----------------------------------------------------------+
-```
-* **Flags:** 0x01 = value, 0x02 = tombstone, 0x04 = TTL expired (optional)
-* **Serialization:** Byte arrays (bincode), CRC32 checksum, optional compression (Zstd).
-* **SSTable:**
-```
-+-------------------------------+
-| Header (version, creation_ts) |
-| Bloom filter metadata         |
-| Data blocks (cells)           |
-| Index (key -> block offset)   |
-| Footer (checksum, offsets)    |
-+-------------------------------+
-```
-
-### Data Consistency and Ordering
-
-* WAL append ensures write order and durability.
-* Memtable flush preserves sequence numbers.
-* SSTables flushed in commit order; manifest updates atomic.
-* Compaction maintains timestamp order.
-* Crash recovery replays WAL; partial/incomplete records ignored.
-
-### Concurrency Model
-
-* Thread-based, synchronized access using `Mutex`, `Arc`, `RwLock`, and `Condvar`.
-* Single writer thread for WAL/memtable operations.
-* Background compaction threads for merging SSTables.
-* Readers acquire snapshot-based read locks; no blocking of writers.
-* No async runtime used; all concurrency is via threads.
-
-## Compaction Scenarios
-
-Using example SSTables (64 B, 128 B, 512 B, 1 KiB, 4 KiB, 8 KiB, 16 KiB, 32 KiB, 64 KiB, 128 KiB, 256 KiB, 512 KiB) with buckets (scaled to small units for illustration; e.g., tiny flushes at 64 B merging to larger):
-- Bucket 1: [64 B]
-- Bucket 2: [128 B]
-- Bucket 3: [512 B, 1 KiB]
-- Bucket 4: [4 KiB]
-- Bucket 5: [8 KiB, 16 KiB, 32 KiB]
-- Bucket 6: [64 KiB, 128 KiB, 256 KiB]
-- Bucket 7: [512 KiB]
-
-### Scenario 1: Minor Compaction (Size-Tiered, Bucket-Based)
-
-* **Trigger:** Bucket has ≥ `min_threshold=4` SSTables.
-* **Selection:** Up to `max_threshold=32` SSTables.
-* **Execution:**
-
-  * Merge iterator over selected SSTables.
-  * For each key:
-
-    * Keep latest entry.
-    * If tombstone expired, check bloom filters of older SSTables; drop if safe.
-    * Else keep value or tombstone.
-  * Write new SSTable (~bucket-size).
-  * Atomic update.
-* **Post-Execution:** Re-bucket and update metrics.
-
-### Scenario 2: Tombstone-Specific Compaction
-
-- **Trigger**: SSTable ratio > `tombstone_threshold=0.2` and age ≥ `tombstone_compaction_interval=86400`.
-- **Selection**: Single SSTable (e.g., 16 KiB).
-- **Execution**:
-  - Read stream.
-  - For each key:
-    - Keep latest.
-    - If latest is tombstone and grace expired:
-      - Check bloom filters of older SSTables.
-      - If none indicate key, drop.
-      - If "maybe" and `bloom_fallback_scan=true` → scan; else keep.
-    - If value, keep it, discard older.
-  - Write new SSTable (~12 KiB).
-  - **False Positives**: Bloom filters might retain tombstones unnecessarily. **Refinement**: For high-ratio SSTables, add optional full SSTable scan if bloom says "maybe" (expensive, toggle via `bloom_fallback_scan`).
-- **Post-Execution**: Re-bucket; re-trigger if needed.
-
-### Scenario 3: Major Compaction (Full, Manual)
-
-- **Trigger**: User-initiated via API call.
-- **Selection**: All SSTables.
-- **Execution**:
-  - Full merge of all SSTables.
-  - Drop tombstones if grace expired (no bloom needed — full set is complete).
-  - Write one or more new SSTables.
-- **Post-Execution**: Replace all in manifest.
-
-## Implementation Steps
-
-1. Pure Storage Engine: Memtable, WAL, SSTable flush, manifest, read/write.
-2. Concurrency: Background compaction threads, locks for manifest/memtable.
-3. Caching: LRU page cache for SSTable blocks.
-4. Multiple Tables: per-table WAL/manifest/config.
-5. Query Language: CLI/API with PUT, GET, DELETE, SCAN.
-
-## Minimal API / Interface Sketch
-
-### Rust API
-
-```rust
-let mut db = Database::open("/var/lib/mydb")?;
-db.put(b"user:1", b"John Doe")?;
-let value = db.get(b"user:1")?;
-db.delete(b"user:1")?;
+<data_dir>/
+├── manifest/
+│   ├── wal-000001.log         # Manifest WAL
+│   └── manifest.snapshot      # Latest manifest snapshot
+├── memtables/
+│   ├── wal-000001.log         # Active memtable WAL
+│   ├── wal-000002.log         # Frozen memtable WAL (pending flush)
+│   └── ...
+└── sstables/
+    ├── sstable-1.sst
+    ├── sstable-2.sst
+    └── ...
 ```
 
-### CLI API
+## Configuration Reference
 
-```bash
-$ mydb put user:1 "John Doe"
-$ mydb get user:1
-John Doe
-$ mydb delete user:1
-```
+### `DbConfig` (public API)
 
-## Limitations
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `write_buffer_size` | `usize` | 64 KiB | Max memtable size in bytes before freeze. Must be ≥ 1024. |
+| `min_compaction_threshold` | `usize` | 4 | Min SSTables in a size bucket to trigger minor compaction. Must be ≥ 2. |
+| `max_compaction_threshold` | `usize` | 32 | Max SSTables to merge in a single minor compaction. Must be ≥ `min_compaction_threshold`. |
+| `tombstone_compaction_ratio` | `f64` | 0.3 | Tombstone-to-record ratio that triggers tombstone compaction. Must be in (0.0, 1.0]. |
+| `thread_pool_size` | `usize` | 2 | Number of background worker threads for flushing and compaction. Must be ≥ 1. |
 
-* STCS may lead to cascading compactions if bucket count grows high; monitor and tune `bucket_high`.
-* Single-node limits scalability; replication/sharding needed for high availability.
-* Oversized records increase SSTable count; mitigate with larger `write_buffer_size`.
+### `EngineConfig` (internal)
 
-## Missing Components (for Production Readiness)
+The `DbConfig` is converted to an `EngineConfig` with additional STCS-specific parameters:
 
-* Testing: Unit, integration, property-based (`proptest`)
-* Benchmarking: `criterion`, throughput, latency
-* Error handling: Custom enums (`DbError`)
-* Configuration: TOML/YAML + `serde`
-* Metrics/Telemetry: `tracing`, Prometheus
-* Documentation: `/docs`, diagrams, examples
-* CI/CD: GitHub Actions, linting
-* Examples/Tools: CLI utilities, SSTable inspectors
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `bucket_low` | 0.5 | Lower bound multiplier for size bucket range. |
+| `bucket_high` | 1.5 | Upper bound multiplier for size bucket range. |
+| `min_sstable_size` | 50 bytes | SSTables smaller than this go to the "small" bucket. |
+| `tombstone_compaction_interval` | 0 seconds | Min SSTable age before eligible for tombstone compaction. |
+| `tombstone_bloom_fallback` | true | Resolve bloom filter false positives via actual `get()`. |
+| `tombstone_range_drop` | true | Scan older SSTables to safely drop range tombstones. |
 
----
+## Architecture Decisions
+
+### Pure Rust, no unsafe
+
+The entire codebase uses safe Rust. Memory-mapped I/O is provided by the `memmap2` crate, and serialization by `bincode` with fixed-integer encoding.
+
+### WAL-first writes
+
+Every mutation is appended to the WAL and `fsync`'d before updating in-memory state. This ensures that a crash at any point does not lose acknowledged data.
+
+### Multi-version concurrency via LSN
+
+Each key may have multiple versions in the memtable, ordered by descending LSN. Resolution is deferred to read time — the highest-LSN entry always wins. This avoids in-place updates and simplifies concurrent access.
+
+### Immutable SSTables with memory mapping
+
+SSTables are never modified after creation. They are memory-mapped for efficient random reads. The atomic `.tmp`-rename write pattern guarantees that only complete, valid SSTables are visible.
+
+### Single compaction strategy (STCS) with three passes
+
+Rather than implementing multiple independent compaction strategies, AeternusDB uses a single **Size-Tiered Compaction Strategy** (STCS) with three complementary passes:
+
+- **Minor** — merges similarly-sized SSTables to reduce file count.
+- **Tombstone** — rewrites a single high-tombstone-ratio SSTable to reclaim space.
+- **Major** — merges all SSTables into one, dropping all spent tombstones.
+
+This is a deliberate design choice: STCS is the natural fit for write-heavy workloads. A different strategy (e.g., Leveled Compaction) would require a fundamentally different approach where tombstone and major passes are unnecessary because every compaction propagates changes across levels.
+
+### Manifest WAL + snapshot
+
+The manifest uses the same WAL infrastructure as the memtable. Periodic `checkpoint()` writes a full snapshot and truncates the manifest WAL, bounding recovery time.
+
+### Background thread pool
+
+Flush and compaction run on a dedicated `crossbeam`-based thread pool. The write path only signals the pool; the actual I/O happens asynchronously. This keeps write latency predictable regardless of compaction load.

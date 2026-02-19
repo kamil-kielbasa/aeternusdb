@@ -4,173 +4,63 @@
 [![Docs](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/docs.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/docs.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An embeddable, persistent key-value storage engine built on a **Log-Structured Merge Tree (LSM-tree)** architecture. Written in Rust with a focus on durability, crash safety, and correctness.
+An embeddable, persistent key-value storage engine built on a **Log-Structured Merge Tree (LSM-tree)** architecture. Written in pure Rust with a focus on durability, crash safety, and correctness.
+
+> **Aeternus** — Latin for *eternal, everlasting*. A fitting name for a database engine designed to preserve data durably across crashes and restarts.
+
+## Quick Start
+
+```rust
+use aeternusdb::{Db, DbConfig};
+
+let db = Db::open("/tmp/my_db", DbConfig::default()).unwrap();
+
+db.put(b"hello", b"world").unwrap();
+assert_eq!(db.get(b"hello").unwrap(), Some(b"world".to_vec()));
+
+db.delete(b"hello").unwrap();
+assert_eq!(db.get(b"hello").unwrap(), None);
+
+db.close().unwrap();
+```
 
 ## Features
 
-- **Write-ahead logging (WAL)** — every mutation is persisted before acknowledgement, guaranteeing durability and crash recovery.
-- **Multi-version concurrency** — multiple versions per key, ordered by log sequence number (LSN); reads always see the latest committed version.
-- **Point & range tombstones** — efficient delete semantics for individual keys and key ranges.
-- **Bloom filter lookups** — each SSTable carries a bloom filter for fast negative point-lookup responses.
-- **Block-level CRC32 integrity** — every on-disk structure is checksummed.
-- **Three compaction strategies** — minor (size-tiered merge), tombstone (per-SSTable GC), and major (full merge).
-- **Configurable thresholds** — buffer sizes, compaction triggers, tombstone ratios, and bloom filter policies are all tunable.
+- **Write-ahead logging** — every mutation is persisted before acknowledgement
+- **Automatic background compaction** — size-tiered compaction with minor, tombstone, and major passes
+- **Point and range deletes** — efficient tombstone-based deletion semantics
+- **Bloom filter lookups** — fast negative lookups on SSTables
+- **CRC32 integrity** — all on-disk blocks are checksummed
+- **Crash recovery** — automatic recovery from WAL on restart
 
-## Architecture
+## Documentation
 
-```text
-┌───────────────────────────────────────────────────────┐
-│                       Engine                          │
-│                                                       │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │  Active     │  │   Frozen     │  │   SSTables   │  │
-│  │  Memtable   │  │  Memtables   │  │  (on disk)   │  │
-│  │  + WAL      │  │  + WALs      │  │              │  │
-│  └──────┬──────┘  └──────┬───────┘  └──────┬───────┘  │
-│         │  freeze        │  flush          │          │
-│         └───────►        └────────►        │          │
-│                                            │          │
-│  ┌─────────────────────────────────────────┘          │
-│  │  Compaction (minor / tombstone / major)            │
-│  └────────────────────────────────────────────────────│
-│                                                       │
-│  ┌──────────────────────────────────────────────────┐ │
-│  │              Manifest (WAL + snapshot)           │ │
-│  └──────────────────────────────────────────────────┘ │
-└───────────────────────────────────────────────────────┘
-```
+| Document | Description |
+|----------|-------------|
+| [Architecture](doc/architecture.md) | High-level design, data flow, concurrency model, and configuration reference |
+| [Getting Started](doc/getting_started.md) | Build, test, usage guide, and local development |
+| [WAL](doc/wal.md) | Write-ahead log format, guarantees, and recovery |
+| [Memtable](doc/memtable.md) | In-memory write buffer, multi-version storage, and flush semantics |
+| [SSTable](doc/sstable.md) | On-disk sorted table format, block layout, and read/write process |
+| [Manifest](doc/manifest.md) | Metadata persistence, WAL + snapshot model, and crash safety |
+| [Compaction](doc/compaction.md) | Size-Tiered Compaction Strategy (STCS) — minor, tombstone, and major |
+| [Changelog](CHANGELOG.md) | Release history and feature notes |
 
-Data flows through three layers, queried newest-first:
+**API Reference (rustdoc):** [kamil-kielbasa.github.io/aeternusdb](https://kamil-kielbasa.github.io/aeternusdb/)
 
-1. **Active memtable** — in-memory sorted map backed by a WAL.
-2. **Frozen memtables** — read-only snapshots awaiting flush to disk.
-3. **SSTables** — immutable, sorted, on-disk files with bloom filters and block indices.
-
-### Modules
-
-| Module | Description |
-|--------|-------------|
-| `engine` | Core storage engine: open, close, put, get, delete, scan, flush, compact |
-| `memtable` | In-memory write buffer with multi-version entries and range tombstones |
-| `wal` | Generic, CRC-protected, append-only write-ahead log |
-| `sstable` | Immutable sorted tables with bloom filters, range tombstones, and block indices |
-| `manifest` | Persistent metadata manager using a WAL + snapshot model |
-| `compaction` | Size-tiered (STCS) compaction with minor, tombstone, and major strategies |
-
-## Getting Started
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (edition 2024)
-
-### Build
+## Build & Test
 
 ```bash
 cargo build
+cargo test --lib                     # unit tests
+cargo test --lib -- --ignored        # stress tests
+cargo doc --no-deps --open           # local API docs
 ```
 
-### Test
+## Contact
 
-```bash
-# Run all unit + integration tests (250 tests)
-cargo test --lib
-
-# Run stress tests (11 tests, ~2 min)
-cargo test --lib -- --ignored
-```
-
-### Generate Documentation
-
-```bash
-cargo doc --no-deps --open
-```
-
-## Usage
-
-Public high-level API is planned for `lib.rs`. Currently the engine internals are `pub(crate)` — see `cargo doc --no-deps --open` for the crate-level documentation and module overview.
-
-## Configuration
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `write_buffer_size` | `usize` | Max memtable size (bytes) before freeze |
-| `compaction_strategy` | `CompactionStrategyType` | Compaction family (`Stcs`) |
-| `bucket_low` | `f64` | Lower bound multiplier for size bucket range |
-| `bucket_high` | `f64` | Upper bound multiplier for size bucket range |
-| `min_sstable_size` | `usize` | Below this, SSTables go to the "small" bucket |
-| `min_threshold` | `usize` | Min SSTables in bucket to trigger minor compaction |
-| `max_threshold` | `usize` | Max SSTables to compact at once |
-| `tombstone_ratio_threshold` | `f64` | Tombstone ratio to trigger tombstone compaction |
-| `tombstone_compaction_interval` | `usize` | Min SSTable age (seconds) for tombstone compaction |
-| `tombstone_bloom_fallback` | `bool` | Resolve bloom false-positives via actual `get()` |
-| `tombstone_range_drop` | `bool` | Scan older SSTables to drop range tombstones |
-| `thread_pool_size` | `usize` | Thread pool size for background operations |
-
-## Compaction Strategies
-
-### Minor Compaction (Size-Tiered)
-
-Groups SSTables into size buckets and merges similarly-sized tables. Deduplicates point entries (keeps highest LSN) but preserves all tombstones.
-
-### Tombstone Compaction (Per-SSTable GC)
-
-Rewrites a single high-tombstone-ratio SSTable, dropping point and range tombstones that are provably unnecessary. Uses bloom filters and optional fallback `get()` calls to safely determine which tombstones can be removed.
-
-### Major Compaction (Full Merge)
-
-Merges **all** SSTables into one, actively applying range tombstones to suppress covered puts. All spent tombstones are dropped from the output.
-
-## On-Disk Format
-
-### SSTable Layout
-
-```text
-[Header]
-[Data Block 1][CRC32]
-[Data Block 2][CRC32]
-...
-[Bloom Filter][CRC32]
-[Range Tombstones][CRC32]
-[Properties][CRC32]
-[Metaindex][CRC32]
-[Index][CRC32]
-[Footer]
-```
-
-### WAL Layout
-
-```text
-[Header][CRC32]
-[Record Length][Record Bytes][CRC32]
-[Record Length][Record Bytes][CRC32]
-...
-```
-
-## Project Structure
-
-```
-src/
-├── lib.rs              # Crate root with module documentation
-├── engine/
-│   ├── mod.rs          # Core engine (open, get, put, scan, compact)
-│   └── utils.rs        # Record type and MergeIterator
-├── memtable/
-│   └── mod.rs          # In-memory write buffer
-├── wal/
-│   └── mod.rs          # Write-ahead log
-├── sstable/
-│   └── mod.rs          # Sorted string table (reader, writer, iterators)
-├── manifest/
-│   └── mod.rs          # Metadata persistence
-└── compaction/
-    ├── mod.rs           # Shared traits and helpers
-    └── stcs/
-        ├── mod.rs       # Size-tiered bucketing
-        ├── minor.rs     # Minor compaction
-        ├── tombstone.rs # Tombstone compaction
-        └── major.rs     # Major compaction
-```
+📧 kamkie1996@gmail.com
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).

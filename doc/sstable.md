@@ -34,7 +34,7 @@ Design improvements based on RocksDB/LevelDB best practices for:
 **Key Principles:**
 - **Fixed-size header**: 32 bytes, no variable-length fields
 - **Sequential writes**: Data → Meta blocks → Metaindex → Index → Footer
-- **Fixed footer position**: Always at `file_size - 48 bytes`
+- **Fixed footer position**: Always at `file_size - 44 bytes`
 - **Block trailers**: Each block contains internal metadata at end
 - **No backward seeking**: All offsets known at write time
 
@@ -315,7 +315,7 @@ Lookup("eagle"):
 
 ## 8 Footer Block
 
-**Fixed 48-byte trailer** at end of file for integrity verification.
+**Fixed 44-byte trailer** at end of file for integrity verification.
 
 ```
 Position: file_size - 44 bytes (FIXED)
@@ -337,7 +337,6 @@ Total:  44 bytes (FIXED)
 - Fixed position enables fast access without reading header
 - No circular dependency (footer doesn't reference header)
 - Footer CRC32 checksums footer itself only
-- Reserved field for future extensions
 - Position at `file_size - 44` serves as implicit magic validation
 
 ---
@@ -663,74 +662,6 @@ BlockHandle = (offset, size)
 
 ---
 
-## Future Extensions (Optional Features)
-
-### Restart Points (Prefix Compression)
-
-**Status:** Planned for next version
-
-**Description:** Store keys with prefix compression + restart points for 30-50% space savings.
-
-**Format changes needed:**
-```
-Data Block Content:
-  Cell with prefix compression:
-    [varint] shared_bytes      ← NEW
-    [varint] unshared_bytes    ← NEW (replaces key_len)
-    [bytes] unshared_key       ← Only unique suffix
-    [u32] value_len
-    [bytes] value
-    [u64] timestamp
-    [u8] flags
-    [u64] lsn
-
-Data Block Trailer:
-  [u32[]] restart_offsets      ← NEW (every 16 entries)
-  [u32] num_restarts           ← Currently 0, will be N
-  [u32] crc32
-```
-
-**Benefits:**
-- 30-50% reduction in key storage
-- Binary search within blocks via restart points
-
-### Column Families
-
-**Status:** Planned for next version
-
-**Description:** Multiple logical namespaces within single storage engine.
-
-**Format changes needed:**
-```
-Cell format:
-  [u32] column_family_id       ← NEW (prepended to cell)
-  [u32] key_len
-  [bytes] key
-  ... rest unchanged ...
-
-Properties:
-  cf.id = "1"
-  cf.name = "users"
-```
-
-**Use cases:**
-- Multi-tenant isolation
-- Separate data types with different settings
-- Efficient bulk deletion (drop entire CF)
-
-### Partitioned Index/Bloom
-
-**Status:** Planned for next version
-
-**Description:** Split large index/bloom into multiple blocks for files >64MB.
-
-**Benefits:**
-- Lazy loading of index partitions
-- Lower memory footprint
-- Better for very large SSTables
-
----
-
 ## Summary
 
 **SSTable** is a production-ready format that:
@@ -742,6 +673,3 @@ Properties:
 ✅ **Standardized metadata** - Key-value properties, min/max keys in properties  
 ✅ **Improved extensibility** - Metaindex enables new features  
 ✅ **Industry alignment** - BlockHandle concept, separator keys  
-✅ **Future-ready** - Clear path to restart points, column families  
-
-The format balances simplicity for initial implementation with extensibility for future enhancements.
