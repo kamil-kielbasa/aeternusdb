@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["SNAPSHOT_FILENAME","SNAPSHOT_TMP_SUFFIX","U32_SIZE","WAL_FILENAME"],"enum":["ManifestError","ManifestEvent"],"struct":["Manifest","ManifestData","ManifestSnapshot","ManifestSstEntry"]};
+window.SIDEBAR_ITEMS = {"constant":["SNAPSHOT_FILENAME","SNAPSHOT_TMP_SUFFIX","WAL_FILENAME"],"enum":["ManifestError","ManifestEvent"],"struct":["Manifest","ManifestData","ManifestSnapshot","ManifestSstEntry"]};

@@ -306,7 +306,7 @@
 <a href=#306 id=306 data-nosnippet>306</a>        manifest.checkpoint()<span class="question-mark">?</span>;
 <a href=#307 id=307 data-nosnippet>307</a>
 <a href=#308 id=308 data-nosnippet>308</a>        <span class="kw">for </span>id <span class="kw">in </span><span class="kw-2">&amp;</span>removed_ids {
-<a href=#309 id=309 data-nosnippet>309</a>            <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, id);
+<a href=#309 id=309 data-nosnippet>309</a>            <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/{:06}.sst"</span>, data_dir, SSTABLE_DIR, id);
 <a href=#310 id=310 data-nosnippet>310</a>            <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = fs::remove_file(<span class="kw-2">&amp;</span>path) {
 <a href=#311 id=311 data-nosnippet>311</a>                <span class="macro">tracing::warn!</span>(id, %e, <span class="string">"failed to remove old SSTable file during compaction"</span>);
 <a href=#312 id=312 data-nosnippet>312</a>            }
@@ -321,7 +321,7 @@
 <a href=#321 id=321 data-nosnippet>321</a>
 <a href=#322 id=322 data-nosnippet>322</a>    <span class="comment">// Build new SSTable.
 <a href=#323 id=323 data-nosnippet>323</a>    </span><span class="kw">let </span>new_sst_id = manifest.allocate_sst_id()<span class="question-mark">?</span>;
-<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">let </span>new_sst_path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, new_sst_id);
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">let </span>new_sst_path = <span class="macro">format!</span>(<span class="string">"{}/{}/{:06}.sst"</span>, data_dir, SSTABLE_DIR, new_sst_id);
 <a href=#325 id=325 data-nosnippet>325</a>
 <a href=#326 id=326 data-nosnippet>326</a>    <span class="kw">let </span>point_count = point_entries.len();
 <a href=#327 id=327 data-nosnippet>327</a>    <span class="kw">let </span>range_count = range_tombstones.len();
@@ -352,7 +352,7 @@
 <a href=#352 id=352 data-nosnippet>352</a>
 <a href=#353 id=353 data-nosnippet>353</a>    <span class="comment">// Delete old SSTable files.
 <a href=#354 id=354 data-nosnippet>354</a>    </span><span class="kw">for </span>id <span class="kw">in </span><span class="kw-2">&amp;</span>removed_ids {
-<a href=#355 id=355 data-nosnippet>355</a>        <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, id);
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/{:06}.sst"</span>, data_dir, SSTABLE_DIR, id);
 <a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = fs::remove_file(<span class="kw-2">&amp;</span>path) {
 <a href=#357 id=357 data-nosnippet>357</a>            <span class="macro">tracing::warn!</span>(id, %e, <span class="string">"failed to remove old SSTable file during compaction"</span>);
 <a href=#358 id=358 data-nosnippet>358</a>        }
