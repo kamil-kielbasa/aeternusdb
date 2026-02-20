@@ -15,7 +15,7 @@
 //! during reads and merges. Bloom filters are maintained per SSTable for quick existence checks
 //! before scanning blocks.
 //!
-//! Data is serialized using a custom [`encoding`](crate::encoding) module with **fixed integer encoding**, and block-level CRC32
+//! Data is serialized using a custom [`encoding`] module with **fixed integer encoding**, and block-level CRC32
 //! checksums ensure corruption detection.
 //!
 //! # On-disk layout

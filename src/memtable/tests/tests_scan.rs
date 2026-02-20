@@ -344,7 +344,7 @@ mod tests {
             .unwrap();
 
         // Scan the full range
-        let results: Vec<_> = memtable.scan(b"key0", b"key5\xff").unwrap().collect();
+        let results: Vec<_> = memtable.scan(b"key0", b"key9\xff").unwrap().collect();
 
         let expected = [
             Record::Put {
@@ -482,7 +482,7 @@ mod tests {
 
         // Delete range key7 through key9
         memtable
-            .delete_range(b"key7".to_vec(), b"key10".to_vec())
+            .delete_range(b"key7".to_vec(), b"key:".to_vec())
             .unwrap();
 
         // Insert key8 after range deletion
@@ -570,7 +570,7 @@ mod tests {
             },
             Record::RangeDelete {
                 start: b"key7".to_vec(),
-                end: b"key10".to_vec(),
+                end: b"key:".to_vec(),
                 lsn: 14,
                 timestamp: 0,
             },

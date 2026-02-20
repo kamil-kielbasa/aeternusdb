@@ -54,6 +54,12 @@ mod tests {
         let value = memtable.get(b"key1").unwrap();
 
         assert_eq!(value, MemtableGetResult::Put(b"value1".to_vec()));
+
+        let stats = memtable.stats().unwrap();
+        assert_eq!(stats.key_count, 1);
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.tombstone_count, 0);
+        assert!(stats.size_bytes > 0);
     }
 
     // ----------------------------------------------------------------
@@ -86,6 +92,11 @@ mod tests {
 
         let value = memtable.get(b"key1").unwrap();
         assert_eq!(value, MemtableGetResult::Delete);
+
+        let stats = memtable.stats().unwrap();
+        assert_eq!(stats.key_count, 1);
+        assert_eq!(stats.entry_count, 2); // put + delete
+        assert_eq!(stats.tombstone_count, 1);
     }
 
     // ----------------------------------------------------------------
@@ -230,6 +241,16 @@ mod tests {
         );
         assert_eq!(memtable.get(b"key9").unwrap(), MemtableGetResult::Delete);
         assert_eq!(memtable.get(b"key10").unwrap(), MemtableGetResult::Delete);
+
+        // Verify stats reflect the mixed state
+        let stats = memtable.stats().unwrap();
+        // 7 distinct keys: key1, key2, key3, key4, key8, key9, key10
+        assert_eq!(stats.key_count, 7);
+        // 5 puts + 3 point-deletes = 8 point entries
+        // (key2 has both put + delete = 2 versions under same key)
+        assert_eq!(stats.entry_count, 8);
+        assert_eq!(stats.tombstone_count, 3);
+        assert_eq!(stats.range_tombstone_count, 3);
     }
 
     // ----------------------------------------------------------------
@@ -403,11 +424,11 @@ mod tests {
     /// Memtable with two puts (`alpha`, `beta`).
     ///
     /// # Actions
-    /// 1. `put("alpha", "value1")`, `put("beta", "value2")` → `max_lsn = 2`.
+    /// 1. `put("alpha", "value1")`, `put("beta", "value2")` → `max_lsn = Some(2)`.
     /// 2. Drop memtable.
-    /// 3. Reopen from same WAL → verify `max_lsn` is still 2.
+    /// 3. Reopen from same WAL → verify `max_lsn` is still `Some(2)`.
     /// 4. Verify data is intact.
-    /// 5. `put("gamma", "value3")` → verify `max_lsn = 3`.
+    /// 5. `put("gamma", "value3")` → verify `max_lsn = Some(3)`.
     ///
     /// # Expected behavior
     /// LSN is restored to the pre-crash value; new writes continue
@@ -441,7 +462,7 @@ mod tests {
         recovered
             .put(b"gamma".to_vec(), b"value3".to_vec())
             .unwrap();
-        assert_eq!(recovered.max_lsn(), lsn_after + 1);
+        assert_eq!(recovered.max_lsn(), Some(lsn_after.unwrap() + 1));
         assert_eq!(
             recovered.get(b"gamma").unwrap(),
             MemtableGetResult::Put(b"value3".to_vec())

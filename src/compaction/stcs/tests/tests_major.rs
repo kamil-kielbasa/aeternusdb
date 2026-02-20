@@ -104,7 +104,7 @@ mod tests {
     ///
     /// # Actions
     /// 1. `major_compact()` on empty engine.
-    /// 2. Write 5 keys (fits in 1 SSTable), flush.
+    /// 2. Write 6 keys (fits in 1 SSTable after flush), flush.
     /// 3. `major_compact()` again.
     ///
     /// # Expected behavior
@@ -119,7 +119,7 @@ mod tests {
         assert!(!compacted, "no SSTables — should not compact");
         assert_eq!(engine.stats().unwrap().sstables_count, 0);
 
-        for i in 0..5 {
+        for i in 0..6 {
             let key = format!("key_{:04}", i).into_bytes();
             engine.put(key, b"val".to_vec()).unwrap();
         }

@@ -145,7 +145,7 @@ The encoding module is used throughout the storage engine:
 
 | Component   | Encoded Types                                                        |
 |-------------|----------------------------------------------------------------------|
-| **WAL**     | `WalHeader`, `Record`, `RangeTombstone`, `MemtableSingleEntry`       |
+| **WAL**     | `WalHeader`, `Record`, `RangeTombstone`, `MemtablePointEntry`       |
 | **SSTable** | Block headers, index entries, bloom filter, properties, range tombstones, footer |
 | **Manifest**| `ManifestEvent`, `ManifestSnapshot`, `ManifestSstEntry`              |
 

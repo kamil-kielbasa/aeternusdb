@@ -2,8 +2,8 @@
 //!
 //! The [`SstWriter`] struct accepts two sorted streams:
 //!
-//! - **Point entries** ([`PointEntry`](crate::engine::PointEntry)): key/value pairs or point tombstones.
-//! - **Range tombstones** ([`RangeTombstone`](crate::engine::RangeTombstone)):
+//! - **Point entries** ([`PointEntry`]): key/value pairs or point tombstones.
+//! - **Range tombstones** ([`RangeTombstone`]):
 //!   delete intervals covering key ranges.
 //!
 //! and writes a fully-structured SSTable containing header, data blocks, bloom

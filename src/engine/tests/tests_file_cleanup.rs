@@ -203,7 +203,7 @@ mod tests {
         let path = tmp.path();
 
         // Create an engine and write + flush to get true SSTables.
-        let engine = engine_with_sstables(path, 50, "key");
+        let engine = engine_with_sstables(path, 100, "key");
         let sst_count = count_sst_files(path);
         engine.close().unwrap();
 

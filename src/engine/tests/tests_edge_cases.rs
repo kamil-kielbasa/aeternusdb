@@ -600,7 +600,7 @@ mod tests {
     /// Fresh engine with memtable-only config — no data whatsoever.
     ///
     /// # Actions
-    /// 1. Call `delete_range("start", "end")` on the empty engine.
+    /// 1. Call `delete_range("aaa", "zzz")` on the empty engine.
     /// 2. Get `"anything"` and scan the full keyspace.
     ///
     /// # Expected behavior
@@ -613,7 +613,7 @@ mod tests {
 
         // Should not panic or error
         engine
-            .delete_range(b"start".to_vec(), b"end".to_vec())
+            .delete_range(b"aaa".to_vec(), b"zzz".to_vec())
             .unwrap();
         assert_eq!(
             engine.get(b"anything".to_vec()).unwrap(),

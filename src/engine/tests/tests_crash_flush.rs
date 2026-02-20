@@ -151,7 +151,7 @@ mod tests {
 
         // Phase 1: Write data, flush, close cleanly.
         {
-            let engine = engine_with_sstables(path, 50, "key");
+            let engine = engine_with_sstables(path, 100, "key");
             engine.close().unwrap();
         }
 
@@ -174,7 +174,7 @@ mod tests {
         );
 
         // Phase 4: All data intact.
-        for i in 0..50 {
+        for i in 0..100 {
             let key = format!("key_{i:04}").into_bytes();
             let result = engine.get(key).unwrap();
             assert!(result.is_some(), "Key key_{i:04} should survive");

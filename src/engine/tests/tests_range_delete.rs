@@ -8,7 +8,7 @@
 //! Test groups:
 //! - **Single-key range** — `[k, k+1)` acts like a point delete.
 //! - **Partial range** — only a subset of existing keys is deleted.
-//! - **Empty / reversed range** — no-op; nothing is deleted.
+//! - **Empty / reversed range** — rejected with an error; nothing is deleted.
 //! - **Overlapping ranges** — the union of intervals is deleted.
 //! - **Nested ranges** — inner range is redundant, outer governs.
 //! - **Adjacent ranges** — touching but non-overlapping intervals.
@@ -147,7 +147,8 @@ mod tests {
     // ----------------------------------------------------------------
 
     /// # Scenario
-    /// Range-deletes where `start == end` or `start > end` are no-ops.
+    /// Range-deletes where `start == end` or `start > end` are rejected
+    /// with an error — invalid ranges are not silently accepted.
     ///
     /// # Starting environment
     /// Fresh engine; 5 keys inserted.
@@ -158,22 +159,28 @@ mod tests {
     /// 3. Get each key 0–4.
     ///
     /// # Expected behavior
-    /// All 5 keys remain present — no data was deleted.
+    /// Both calls return an error. All 5 keys remain present.
     #[test]
-    fn memtable__range_delete_empty_range_is_noop() {
+    fn memtable__range_delete_empty_range_is_rejected() {
         let tmp = TempDir::new().unwrap();
         let engine = Engine::open(tmp.path(), memtable_only_config()).unwrap();
         populate(&engine, 5);
 
-        // Empty range: start == end
-        engine
-            .delete_range(b"key_02".to_vec(), b"key_02".to_vec())
-            .unwrap();
+        // Empty range: start == end → error
+        assert!(
+            engine
+                .delete_range(b"key_02".to_vec(), b"key_02".to_vec())
+                .is_err(),
+            "start == end should be rejected"
+        );
 
-        // Reversed range: start > end
-        engine
-            .delete_range(b"key_04".to_vec(), b"key_01".to_vec())
-            .unwrap();
+        // Reversed range: start > end → error
+        assert!(
+            engine
+                .delete_range(b"key_04".to_vec(), b"key_01".to_vec())
+                .is_err(),
+            "start > end should be rejected"
+        );
 
         // Everything still exists
         for i in 0..5 {

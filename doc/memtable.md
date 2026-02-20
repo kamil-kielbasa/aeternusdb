@@ -10,7 +10,7 @@ The memtable stores entries in a **multi-version** layout using nested `BTreeMap
 
 ```text
 Point entries:
-  BTreeMap<key, BTreeMap<Reverse<lsn>, MemtableSingleEntry>>
+  BTreeMap<key, BTreeMap<Reverse<lsn>, MemtablePointEntry>>
 
 Range tombstones:
   BTreeMap<start_key, BTreeMap<Reverse<lsn>, MemtableRangeTombstone>>
@@ -21,14 +21,12 @@ Range tombstones:
 
 ### Entry Types
 
-**`MemtableSingleEntry`** — a single versioned point entry:
+**`MemtablePointEntry`** — a versioned point entry enum:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `value` | `Option<Vec<u8>>` | The stored value. `None` for tombstones. |
-| `timestamp` | `u64` | Wall-clock timestamp in nanoseconds since UNIX epoch. |
-| `is_delete` | `bool` | Whether this entry is a point tombstone. |
-| `lsn` | `u64` | Log sequence number for version ordering. |
+| Variant | Fields | Description |
+|---------|--------|-------------|
+| `Put` | `value: Vec<u8>`, `timestamp: u64`, `lsn: u64` | A live key-value pair. |
+| `Delete` | `timestamp: u64`, `lsn: u64` | A point tombstone (deletion marker). |
 
 **`MemtableRangeTombstone`** — a range deletion marker:
 
@@ -55,8 +53,8 @@ This ordering guarantees that a crash after step 3 but before step 4 is safe —
 
 | Operation | WAL Record | In-Memory Effect |
 |-----------|-----------|-----------------|
-| `put(key, value)` | `Record::Put` | Inserts a `MemtableSingleEntry` with `is_delete = false`. |
-| `delete(key)` | `Record::Delete` | Inserts a `MemtableSingleEntry` with `is_delete = true`, `value = None`. |
+| `put(key, value)` | `Record::Put` | Inserts a `MemtablePointEntry::Put` with the value. |
+| `delete(key)` | `Record::Delete` | Inserts a `MemtablePointEntry::Delete` tombstone. |
 | `delete_range(start, end)` | `Record::RangeDelete` | Inserts a `MemtableRangeTombstone` covering `[start, end)`. |
 
 ## Read Path
@@ -115,8 +113,8 @@ The memtable owns an `AtomicU64` counter (`next_lsn`) that assigns monotonically
 
 The memtable tracks an `approximate_size` counter that is incremented on every write. The size estimate includes:
 
-- `size_of::<MemtableSingleEntry>()` + key length + value length (for puts).
-- `size_of::<MemtableSingleEntry>()` + key length (for deletes).
+- `size_of::<MemtablePointEntry>()` + key length + value length (for puts).
+- `size_of::<MemtablePointEntry>()` + key length (for deletes).
 - `size_of::<MemtableRangeTombstone>()` + start length + end length (for range deletes).
 
 When the next write would cause `approximate_size` to exceed `write_buffer_size`, the memtable returns `FlushRequired`. The engine then freezes the memtable and swaps in a fresh one.

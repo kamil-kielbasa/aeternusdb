@@ -265,16 +265,16 @@ impl Engine {
             sstable_handles.push(sstable);
         }
 
-        // 5. Compute max LSN in active memtable.
+        // 5. Compute max LSN across all sources.
         let mut max_lsn = manifest_last_lsn;
 
-        if memtable.max_lsn() > max_lsn {
-            max_lsn = memtable.max_lsn();
+        if memtable.max_lsn().unwrap_or(0) > max_lsn {
+            max_lsn = memtable.max_lsn().unwrap_or(0);
         }
 
         for frozen in frozen_memtables.iter() {
-            if frozen.max_lsn() > max_lsn {
-                max_lsn = frozen.max_lsn();
+            if frozen.max_lsn().unwrap_or(0) > max_lsn {
+                max_lsn = frozen.max_lsn().unwrap_or(0);
             }
         }
 
@@ -284,7 +284,7 @@ impl Engine {
             }
         }
 
-        if memtable.max_lsn() != max_lsn {
+        if memtable.max_lsn().unwrap_or(0) != max_lsn {
             memtable.inject_max_lsn(max_lsn + 1);
         }
 
@@ -292,7 +292,7 @@ impl Engine {
         // We use wal_seq rather than creation_timestamp because on crash
         // recovery all frozen are replayed at nearly the same instant,
         // making timestamps unreliable for ordering.
-        frozen_memtables.sort_by(|a, b| b.memtable.wal.wal_seq().cmp(&a.memtable.wal.wal_seq()));
+        frozen_memtables.sort_by_key(|f| std::cmp::Reverse(f.wal_seq()));
 
         // Sort SSTables by max_lsn descending.  This lets get()
         // early-terminate: once we find a result at LSN L, any SSTable
@@ -329,7 +329,7 @@ impl Engine {
         }
 
         // 2. Checkpoint the manifest to create a snapshot
-        let max_lsn = inner.active.max_lsn();
+        let max_lsn = inner.active.max_lsn().unwrap_or(0);
         inner.manifest.update_lsn(max_lsn)?;
         inner.manifest.checkpoint()?;
 
@@ -370,7 +370,7 @@ impl Engine {
                 Self::freeze_active(&mut inner)?;
                 inner.active.put(key, value)?;
 
-                let max_lsn = inner.active.max_lsn();
+                let max_lsn = inner.active.max_lsn().unwrap_or(0);
                 inner.manifest.update_lsn(max_lsn)?;
 
                 Ok(true)
@@ -396,7 +396,7 @@ impl Engine {
                 Self::freeze_active(&mut inner)?;
                 inner.active.delete(key)?;
 
-                let max_lsn = inner.active.max_lsn();
+                let max_lsn = inner.active.max_lsn().unwrap_or(0);
                 inner.manifest.update_lsn(max_lsn)?;
 
                 Ok(true)
@@ -425,7 +425,7 @@ impl Engine {
                 Self::freeze_active(&mut inner)?;
                 inner.active.delete_range(start_key, end_key)?;
 
-                let max_lsn = inner.active.max_lsn();
+                let max_lsn = inner.active.max_lsn().unwrap_or(0);
                 inner.manifest.update_lsn(max_lsn)?;
 
                 Ok(true)
@@ -580,7 +580,7 @@ impl Engine {
     /// The old memtable is pushed to the front of `inner.frozen`.
     fn freeze_active(inner: &mut EngineInner) -> Result<(), EngineError> {
         let frozen_wal_id = inner.active.wal.wal_seq();
-        let current_max_lsn = inner.active.max_lsn();
+        let current_max_lsn = inner.active.max_lsn().unwrap_or(0);
         let new_active_wal_id = frozen_wal_id + 1;
 
         let new_active = Memtable::new(
@@ -657,7 +657,7 @@ impl Engine {
             .frozen
             .pop()
             .ok_or_else(|| EngineError::Internal("frozen list became empty unexpectedly".into()))?;
-        let frozen_wal_id = frozen.memtable.wal.wal_seq();
+        let frozen_wal_id = frozen.wal_seq();
 
         // Get all records from the frozen memtable
         let records: Vec<_> = frozen.iter_for_flush()?.collect();
