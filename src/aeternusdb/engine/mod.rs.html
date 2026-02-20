@@ -537,12 +537,12 @@
 <a href=#537 id=537 data-nosnippet>537</a>        <span class="kw">let </span><span class="kw-2">mut </span>iters: Vec&lt;Box&lt;<span class="kw">dyn </span>Iterator&lt;Item = Record&gt;&gt;&gt; = Vec::new();
 <a href=#538 id=538 data-nosnippet>538</a>
 <a href=#539 id=539 data-nosnippet>539</a>        <span class="comment">// Active memtable - collect to own the data
-<a href=#540 id=540 data-nosnippet>540</a>        </span><span class="kw">let </span>active_records: Vec&lt;<span class="kw">_</span>&gt; = inner.active.scan(start_key, end_key)<span class="question-mark">?</span>.collect();
+<a href=#540 id=540 data-nosnippet>540</a>        </span><span class="kw">let </span>active_records = inner.active.scan(start_key, end_key)<span class="question-mark">?</span>;
 <a href=#541 id=541 data-nosnippet>541</a>        iters.push(Box::new(active_records.into_iter()));
 <a href=#542 id=542 data-nosnippet>542</a>
 <a href=#543 id=543 data-nosnippet>543</a>        <span class="comment">// Frozen memtables - collect to own the data
 <a href=#544 id=544 data-nosnippet>544</a>        </span><span class="kw">for </span>frozen <span class="kw">in </span><span class="kw-2">&amp;</span>inner.frozen {
-<a href=#545 id=545 data-nosnippet>545</a>            <span class="kw">let </span>records: Vec&lt;<span class="kw">_</span>&gt; = frozen.scan(start_key, end_key)<span class="question-mark">?</span>.collect();
+<a href=#545 id=545 data-nosnippet>545</a>            <span class="kw">let </span>records = frozen.scan(start_key, end_key)<span class="question-mark">?</span>;
 <a href=#546 id=546 data-nosnippet>546</a>            iters.push(Box::new(records.into_iter()));
 <a href=#547 id=547 data-nosnippet>547</a>        }
 <a href=#548 id=548 data-nosnippet>548</a>
@@ -660,7 +660,7 @@
 <a href=#660 id=660 data-nosnippet>660</a>        <span class="kw">let </span>frozen_wal_id = frozen.memtable.wal.wal_seq();
 <a href=#661 id=661 data-nosnippet>661</a>
 <a href=#662 id=662 data-nosnippet>662</a>        <span class="comment">// Get all records from the frozen memtable
-<a href=#663 id=663 data-nosnippet>663</a>        </span><span class="kw">let </span>records: Vec&lt;<span class="kw">_</span>&gt; = frozen.iter_for_flush()<span class="question-mark">?</span>.collect();
+<a href=#663 id=663 data-nosnippet>663</a>        </span><span class="kw">let </span>records: Vec&lt;<span class="kw">_</span>&gt; = frozen.iter_for_flush()<span class="question-mark">?</span>.into_iter().collect();
 <a href=#664 id=664 data-nosnippet>664</a>
 <a href=#665 id=665 data-nosnippet>665</a>        <span class="comment">// Separate into point entries and range tombstones
 <a href=#666 id=666 data-nosnippet>666</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>point_entries = Vec::new();

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["MemtableError","MemtableGetResult"],"struct":["FrozenMemtable","HexKey","Memtable","MemtableInner","MemtableSingleEntry"]};
+window.SIDEBAR_ITEMS = {"constant":["POINT_ENTRY_TAG_DELETE","POINT_ENTRY_TAG_PUT"],"enum":["MemtableError","MemtableGetResult","MemtablePointEntry"],"struct":["FrozenMemtable","HexKey","Memtable","MemtableInner","MemtableStats"],"trait":["ReadMemtable"]};
