@@ -90,17 +90,25 @@ Major compaction is triggered explicitly by the user via `Db::major_compact()`.
 
 ### Read Path — Range Scan
 
-`Db::scan(start, end)` creates a **merge iterator** (min-heap) across all layers:
+`Db::scan(start, end)` uses an **MVCC snapshot** approach to avoid holding the engine lock during iteration:
 
-1. Collect scan iterators from: active memtable, frozen memtables, all SSTables.
-2. Feed them into a `MergeIterator` that yields `Record`s in `(key ASC, LSN DESC)` order.
-3. Wrap with a `VisibilityFilter` that applies point and range tombstone semantics to emit only live `(key, value)` pairs.
+1. **Snapshot** (under read lock):
+   - Collect active memtable records (already in RAM, cheap).
+   - `Arc::clone` each frozen memtable and SSTable handle (pointer bumps, no data copy).
+   - Release the read lock.
+2. **Iterate** (lock-free):
+   - Frozen memtable scans produce owned `Record`s from in-RAM data.
+   - SSTable scans use `ScanIterator<Arc<SSTable>>` — lazy, block-at-a-time iteration via mmap. Only one data block per SSTable is resident in memory at a time.
+3. Feed all iterators into a `MergeIterator` that yields `Record`s in `(key ASC, LSN DESC)` order.
+4. Wrap with a `VisibilityFilter` that applies point and range tombstone semantics to emit only live `(key, value)` pairs.
+
+The `Arc` keeps each layer alive even if a concurrent flush removes a frozen memtable, or compaction replaces SSTables, while the scan is in progress. On Unix, mmap survives file deletion via inode reference counting.
 
 ## Concurrency Model
 
 | Component | Synchronization | Notes |
 |-----------|----------------|-------|
-| `Engine` | `Arc<RwLock<EngineInner>>` | Reads take a shared lock; writes and flushes take an exclusive lock. |
+| `Engine` | `Arc<RwLock<EngineInner>>` | Reads take a shared lock; writes and flushes take an exclusive lock. Scans capture `Arc` clones of frozen memtables and SSTables under a brief read lock, then iterate lock-free. |
 | `Memtable` | `Arc<RwLock<MemtableInner>>` | WAL appends are serialized via `Arc<Mutex<File>>`. |
 | `Manifest` | `Mutex<ManifestData>` + WAL mutex | All metadata mutations are serialized. |
 | `Db` | Background thread pool via `crossbeam` channel | Flush and compaction tasks run on dedicated threads. Write path dispatches tasks without blocking. |
@@ -175,6 +183,10 @@ The `DbConfig` is converted to an `EngineConfig` with additional STCS-specific p
 | `tombstone_range_drop` | true | Scan older SSTables to safely drop range tombstones. |
 
 ## Architecture Decisions
+
+### MVCC snapshot scans
+
+Range scans capture an `Arc`-based snapshot of the engine state under a brief read lock, then iterate lazily without holding any lock. Frozen memtables and SSTables are stored as `Vec<Arc<FrozenMemtable>>` and `Vec<Arc<SSTable>>` respectively. The `ScanIterator` is generic over `S: Deref<Target = SSTable>`, allowing both borrowed (`&SSTable`, used by compaction) and owned (`Arc<SSTable>`, used by scans) access patterns. This avoids materializing entire SSTable scan results in memory.
 
 ### Pure Rust, no unsafe
 

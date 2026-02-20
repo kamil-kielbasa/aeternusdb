@@ -88,6 +88,7 @@ pub use iterator::{BlockEntry, BlockIterator, ScanIterator};
 // Includes
 // ------------------------------------------------------------------------------------------------
 
+use std::sync::Arc;
 use std::{fs::File, io, path::Path};
 
 use crate::encoding::{self, EncodingError};
@@ -831,6 +832,20 @@ impl SSTable {
         end_key: &[u8],
     ) -> Result<impl Iterator<Item = Record> + use<'_>, SSTableError> {
         ScanIterator::new(self, start_key.to_vec(), end_key.to_vec())
+    }
+
+    /// Creates a scan iterator that **owns** the SSTable via `Arc`.
+    ///
+    /// Unlike [`scan`](Self::scan), the returned iterator is `'static` — it
+    /// keeps the SSTable alive through the `Arc` and does not borrow from
+    /// any lock guard.  Used by the MVCC snapshot scan path in
+    /// [`Engine::raw_scan`](crate::engine::Engine).
+    pub fn scan_owned(
+        this: &Arc<Self>,
+        start_key: &[u8],
+        end_key: &[u8],
+    ) -> Result<ScanIterator<Arc<SSTable>>, SSTableError> {
+        ScanIterator::new(Arc::clone(this), start_key.to_vec(), end_key.to_vec())
     }
 
     /// Reads a block referenced by a [`BlockHandle`] from the mmap and verifies

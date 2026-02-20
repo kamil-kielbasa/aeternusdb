@@ -187,10 +187,10 @@ struct EngineInner {
 
     /// Frozen memtables waiting to be flushed to SSTable.
     /// We keep them in memory for reads until flush completes.
-    frozen: Vec<FrozenMemtable>,
+    frozen: Vec<Arc<FrozenMemtable>>,
 
     /// Loaded SSTables.
-    sstables: Vec<SSTable>,
+    sstables: Vec<Arc<SSTable>>,
 
     /// Path where engine will be mounted.
     data_dir: PathBuf,
@@ -361,8 +361,8 @@ impl Engine {
         let inner = EngineInner {
             manifest,
             active: memtable,
-            frozen: frozen_memtables,
-            sstables: sstable_handles,
+            frozen: frozen_memtables.into_iter().map(Arc::new).collect(),
+            sstables: sstable_handles.into_iter().map(Arc::new).collect(),
             data_dir: base.to_path_buf(),
             config,
         };
@@ -535,44 +535,55 @@ impl Engine {
         Ok(VisibilityFilter::new(merged))
     }
 
-    /// Collects records from all layers into owned iterators and merges them.
+    /// Captures an MVCC snapshot of all layers and merges them lazily.
     ///
-    /// # Why `.collect()`?
+    /// # MVCC snapshot approach
     ///
-    /// Each layer's scan iterator borrows from data behind the `RwLock`.
-    /// The lock guard (`RwLockReadGuard`) is dropped when this function
-    /// returns, which would invalidate any borrowed iterators.
+    /// 1. **Active memtable** — `.collect()` (mutable, already in RAM).
+    /// 2. **Frozen memtables / SSTables** — `Arc::clone` the handles
+    ///    (cheap pointer bump), then release the lock.
+    /// 3. Scan frozen memtables (in-RAM, scan already collects).
+    /// 4. Create **lazy** `ScanIterator<Arc<SSTable>>` per SSTable — reads
+    ///    blocks on demand via mmap, never materialising the full result
+    ///    set in RAM.
     ///
-    /// By calling `.collect()` while the guard is alive, we materialise
-    /// each layer's records into owned `Vec<Record>`s. The resulting
-    /// `into_iter()` iterators own their data and survive past the lock
-    /// release.
-    ///
-    /// **Trade-off:** the full scan result set for every layer is held in
-    /// memory simultaneously. For very large ranges this may be costly.
+    /// The `Arc` keeps each layer alive even if a concurrent flush or
+    /// compaction removes it from `EngineInner` while we’re iterating.
     fn raw_scan(
         &self,
         start_key: &[u8],
         end_key: &[u8],
     ) -> Result<utils::MergeIterator<'static>, EngineError> {
-        let inner = self.read_lock()?;
+        // --- snapshot under read lock (fast) ---
+        let (active_records, frozen_snapshot, sstable_snapshot) = {
+            let inner = self.read_lock()?;
+
+            // Active memtable — collect (mutable & in RAM, cheap).
+            let active_records: Vec<_> = inner.active.scan(start_key, end_key)?.collect();
+
+            // Clone Arc handles (pointer bumps, no data copy).
+            let frozen: Vec<Arc<FrozenMemtable>> = inner.frozen.iter().map(Arc::clone).collect();
+            let sstables: Vec<Arc<SSTable>> = inner.sstables.iter().map(Arc::clone).collect();
+
+            (active_records, frozen, sstables)
+        };
+        // --- lock released ---
 
         let mut iters: Vec<Box<dyn Iterator<Item = Record>>> = Vec::new();
 
-        // Active memtable — collect to own the data (see doc above).
-        let active_records: Vec<_> = inner.active.scan(start_key, end_key)?.collect();
+        // Active memtable (already collected).
         iters.push(Box::new(active_records.into_iter()));
 
-        // Frozen memtables — collect to own the data.
-        for frozen in &inner.frozen {
-            let records: Vec<_> = frozen.scan(start_key, end_key)?.collect();
+        // Frozen memtables — scan produces owned Records (in-RAM data).
+        for fm in &frozen_snapshot {
+            let records: Vec<_> = fm.scan(start_key, end_key)?.collect();
             iters.push(Box::new(records.into_iter()));
         }
 
-        // SSTables — collect to own the data.
-        for sstable in &inner.sstables {
-            let records: Vec<_> = sstable.scan(start_key, end_key)?.collect();
-            iters.push(Box::new(records.into_iter()));
+        // SSTables — lazy, block-at-a-time via mmap.
+        for sst in &sstable_snapshot {
+            let scan = SSTable::scan_owned(sst, start_key, end_key)?;
+            iters.push(Box::new(scan));
         }
 
         Ok(utils::MergeIterator::new(iters))
@@ -612,7 +623,7 @@ impl Engine {
         let old_active = std::mem::replace(&mut inner.active, new_active);
         let frozen = old_active.frozen()?;
         // Insert at beginning to maintain sorted order (newest first)
-        inner.frozen.insert(0, frozen);
+        inner.frozen.insert(0, Arc::new(frozen));
 
         // Ensure LSN continuity
         inner.active.inject_max_lsn(current_max_lsn);
@@ -704,7 +715,7 @@ impl Engine {
         let mut sstable = SSTable::open(&sstable_path)?;
         sstable.set_id(sstable_id);
         // Insert at beginning to maintain sorted order (newest first)
-        inner.sstables.insert(0, sstable);
+        inner.sstables.insert(0, Arc::new(sstable));
 
         // Update manifest
         inner.manifest.add_sstable(ManifestSstEntry {
@@ -832,7 +843,7 @@ impl Engine {
         if let Some(ref path) = cr.new_sst_path {
             let mut new_sst = SSTable::open(path)?;
             new_sst.set_id(cr.new_sst_id.unwrap_or(0));
-            inner.sstables.push(new_sst);
+            inner.sstables.push(Arc::new(new_sst));
         }
 
         // Re-sort by max_lsn descending to maintain the early-termination

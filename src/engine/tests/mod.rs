@@ -26,4 +26,5 @@ mod tests_file_cleanup;
 
 // Priority 3 — hardening (edge cases)
 mod tests_hardening_edge;
+mod tests_mvcc_scan;
 mod tests_scan_edge;

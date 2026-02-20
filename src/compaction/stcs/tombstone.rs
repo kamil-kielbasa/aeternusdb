@@ -19,6 +19,7 @@ use crate::engine::EngineConfig;
 use crate::engine::RangeTombstone;
 use crate::manifest::Manifest;
 use crate::sstable::{GetResult, PointEntry, SSTable, SSTableError};
+use std::sync::Arc;
 use tracing::{debug, info, trace};
 
 // ------------------------------------------------------------------------------------------------
@@ -30,7 +31,7 @@ use tracing::{debug, info, trace};
 /// Returns `Ok(Some(result))` if compaction was performed, or
 /// `Ok(None)` if no SSTable was eligible.
 pub fn maybe_compact(
-    sstables: &[SSTable],
+    sstables: &[Arc<SSTable>],
     manifest: &mut Manifest,
     data_dir: &str,
     config: &EngineConfig,
@@ -86,7 +87,7 @@ pub fn maybe_compact(
 ///
 /// Picks the SSTable with the highest tombstone ratio that exceeds
 /// `config.tombstone_ratio_threshold` and meets the minimum age.
-fn select_candidate(sstables: &[SSTable], config: &EngineConfig) -> Option<usize> {
+fn select_candidate(sstables: &[Arc<SSTable>], config: &EngineConfig) -> Option<usize> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -133,13 +134,13 @@ fn select_candidate(sstables: &[SSTable], config: &EngineConfig) -> Option<usize
 /// Rewrites the target SSTable, dropping tombstones that are provably safe
 /// to remove.
 fn execute(
-    sstables: &[SSTable],
+    sstables: &[Arc<SSTable>],
     target_idx: usize,
     manifest: &mut Manifest,
     data_dir: &str,
     config: &EngineConfig,
 ) -> Result<CompactionResult, CompactionError> {
-    let target = &sstables[target_idx];
+    let target = &*sstables[target_idx];
     // Only check SSTables that are **older** (lower ID) than the target.
     // A tombstone only needs to suppress data in older SSTables — if a
     // newer SSTable has the same key, that version already shadows the
@@ -148,7 +149,7 @@ fn execute(
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != target_idx && sstables[*i].id() < target.id())
-        .map(|(_, s)| s)
+        .map(|(_, s)| &**s)
         .collect();
 
     // Full scan of the target SSTable.

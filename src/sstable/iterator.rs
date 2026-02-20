@@ -41,6 +41,8 @@
 //! The scan iterator does **not** perform visibility resolution — that is the
 //! responsibility of upper layers (engine merge iterator, visibility filter).
 
+use std::ops::Deref;
+
 use crate::encoding;
 
 use crate::engine::Record;
@@ -225,9 +227,9 @@ impl Iterator for BlockIterator {
 /// - Iterates through range tombstones stored in a separate structure
 ///
 /// Errors during block loading or decoding are returned via the iterator.
-pub struct ScanIterator<'a> {
-    /// Reference to the SSTable being scanned.
-    sstable: &'a SSTable,
+pub struct ScanIterator<S: Deref<Target = SSTable> = &'static SSTable> {
+    /// Reference to (or owned handle on) the SSTable being scanned.
+    sstable: S,
 
     /// Current index into the SSTable block index.
     current_block_index: usize,
@@ -251,14 +253,10 @@ pub struct ScanIterator<'a> {
     next_point: Option<Record>,
 }
 
-impl<'a> ScanIterator<'a> {
+impl<S: Deref<Target = SSTable>> ScanIterator<S> {
     /// Create a new SSTable scan iterator for the half-open range
     /// `start_key <= key < end_key`.
-    pub fn new(
-        sstable: &'a SSTable,
-        start_key: Vec<u8>,
-        end_key: Vec<u8>,
-    ) -> Result<Self, SSTableError> {
+    pub fn new(sstable: S, start_key: Vec<u8>, end_key: Vec<u8>) -> Result<Self, SSTableError> {
         if start_key >= end_key {
             return Err(SSTableError::Internal("scan start >= end".to_string()));
         }
@@ -393,7 +391,7 @@ impl<'a> ScanIterator<'a> {
     }
 }
 
-impl<'a> Iterator for ScanIterator<'a> {
+impl<S: Deref<Target = SSTable>> Iterator for ScanIterator<S> {
     type Item = Record;
 
     fn next(&mut self) -> Option<Self::Item> {

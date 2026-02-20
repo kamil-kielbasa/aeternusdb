@@ -17,6 +17,8 @@ pub mod major;
 pub mod minor;
 pub mod tombstone;
 
+use std::sync::Arc;
+
 use crate::engine::EngineConfig;
 use crate::sstable::SSTable;
 
@@ -36,7 +38,7 @@ use crate::manifest::Manifest;
 ///
 /// Returns a vec of buckets, where each bucket is a vec of indices
 /// into the input `sstables` slice.
-pub fn bucket_sstables(sstables: &[SSTable], config: &EngineConfig) -> Vec<Vec<usize>> {
+pub fn bucket_sstables(sstables: &[Arc<SSTable>], config: &EngineConfig) -> Vec<Vec<usize>> {
     if sstables.is_empty() {
         return Vec::new();
     }
@@ -130,7 +132,7 @@ pub struct MinorCompaction;
 impl CompactionStrategy for MinorCompaction {
     fn compact(
         &self,
-        sstables: &[SSTable],
+        sstables: &[Arc<SSTable>],
         manifest: &mut Manifest,
         data_dir: &str,
         config: &EngineConfig,
@@ -145,7 +147,7 @@ pub struct TombstoneCompaction;
 impl CompactionStrategy for TombstoneCompaction {
     fn compact(
         &self,
-        sstables: &[SSTable],
+        sstables: &[Arc<SSTable>],
         manifest: &mut Manifest,
         data_dir: &str,
         config: &EngineConfig,
@@ -160,7 +162,7 @@ pub struct MajorCompaction;
 impl CompactionStrategy for MajorCompaction {
     fn compact(
         &self,
-        sstables: &[SSTable],
+        sstables: &[Arc<SSTable>],
         manifest: &mut Manifest,
         data_dir: &str,
         config: &EngineConfig,

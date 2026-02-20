@@ -36,6 +36,8 @@
 
 pub mod stcs;
 
+use std::sync::Arc;
+
 use crate::engine::RangeTombstone;
 pub use crate::engine::utils::MergeIterator;
 use crate::engine::utils::Record;
@@ -64,7 +66,7 @@ pub trait CompactionStrategy {
     /// is nothing to do should simply return `Ok(None)`.
     fn compact(
         &self,
-        sstables: &[SSTable],
+        sstables: &[Arc<SSTable>],
         manifest: &mut Manifest,
         data_dir: &str,
         config: &EngineConfig,

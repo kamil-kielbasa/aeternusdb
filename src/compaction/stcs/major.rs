@@ -26,6 +26,7 @@ use crate::engine::RangeTombstone;
 use crate::engine::utils::Record;
 use crate::manifest::Manifest;
 use crate::sstable::{PointEntry, SSTable};
+use std::sync::Arc;
 use tracing::{debug, info, trace};
 
 // ------------------------------------------------------------------------------------------------
@@ -39,7 +40,7 @@ use tracing::{debug, info, trace};
 ///
 /// Returns `Ok(None)` if nothing to compact (0–1 SSTables).
 pub fn compact(
-    sstables: &[SSTable],
+    sstables: &[Arc<SSTable>],
     manifest: &mut Manifest,
     data_dir: &str,
     _config: &EngineConfig,
@@ -75,11 +76,11 @@ pub fn compact(
 // ------------------------------------------------------------------------------------------------
 
 fn execute(
-    sstables: &[SSTable],
+    sstables: &[Arc<SSTable>],
     manifest: &mut Manifest,
     data_dir: &str,
 ) -> Result<CompactionResult, CompactionError> {
-    let sst_refs: Vec<&SSTable> = sstables.iter().collect();
+    let sst_refs: Vec<&SSTable> = sstables.iter().map(|s| &**s).collect();
     let removed_ids: Vec<u64> = sstables.iter().map(|s| s.id()).collect();
 
     // Phase 1: Collect all range tombstones upfront from all SSTables.

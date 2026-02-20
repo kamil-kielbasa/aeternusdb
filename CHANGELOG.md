@@ -4,6 +4,24 @@ All notable changes to AeternusDB are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-02-20
+
+### Changed
+
+#### MVCC Snapshot Scans
+- **`raw_scan()` rewritten** — range scans now capture an `Arc`-based MVCC snapshot of frozen memtables and SSTables under a brief read lock, then iterate lazily without holding the lock. SSTable data is read block-at-a-time via mmap on demand, eliminating the previous `.collect()` pattern that materialized entire SSTable scan results in memory.
+- **`EngineInner` fields Arc-wrapped** — `frozen: Vec<Arc<FrozenMemtable>>`, `sstables: Vec<Arc<SSTable>>`. Concurrent flushes and compactions cannot invalidate an in-progress scan; the `Arc` keeps old layers alive via reference counting (and Unix inode semantics for mmap).
+- **`ScanIterator<S>` made generic** — the SSTable scan iterator is now generic over `S: Deref<Target = SSTable>`, supporting both borrowed (`&SSTable`, for compaction) and owned (`Arc<SSTable>`, for MVCC scans) access.
+- **`SSTable::scan_owned()`** — new associated function that clones an `Arc<SSTable>` and returns a `ScanIterator<Arc<SSTable>>` (`'static` iterator).
+- **`CompactionStrategy` trait** updated to accept `&[Arc<SSTable>]` — all STCS implementations (minor, tombstone, major) adapted accordingly.
+
+### Added
+
+#### Testing
+- 11 new tests for MVCC snapshot scans:
+  - `tests_scan_owned` (6 tests) — owned scan equivalence with borrowed scan, Arc survival after drop, range tombstone interleaving, mixed record types, empty range, compile-time `'static` proof.
+  - `tests_mvcc_scan` (5 tests) — scan merges all three layers, scan survives concurrent flush, scan survives concurrent compaction, large range across many SSTables, latest version wins across layers.
+
 ## [1.0.0] — 2025-02-18
 
 ### Added

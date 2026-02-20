@@ -11,6 +11,7 @@ use crate::compaction::{
 use crate::engine::EngineConfig;
 use crate::manifest::Manifest;
 use crate::sstable::SSTable;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Checks if minor compaction is needed and executes it if so.
@@ -18,7 +19,7 @@ use tracing::{debug, info};
 /// Returns `Ok(Some(result))` if compaction was performed, or
 /// `Ok(None)` if no bucket met the threshold.
 pub fn maybe_compact(
-    sstables: &[SSTable],
+    sstables: &[Arc<SSTable>],
     manifest: &mut Manifest,
     data_dir: &str,
     config: &EngineConfig,
@@ -58,12 +59,12 @@ pub fn maybe_compact(
 /// Merges the selected SSTables into a single new SSTable, deduplicating
 /// point entries (keeping highest LSN per key) and preserving all tombstones.
 fn execute(
-    sstables: &[SSTable],
+    sstables: &[Arc<SSTable>],
     selected_indices: &[usize],
     manifest: &mut Manifest,
     data_dir: &str,
 ) -> Result<CompactionResult, CompactionError> {
-    let selected_ssts: Vec<&SSTable> = selected_indices.iter().map(|&i| &sstables[i]).collect();
+    let selected_ssts: Vec<&SSTable> = selected_indices.iter().map(|&i| &*sstables[i]).collect();
 
     let removed_ids: Vec<u64> = selected_ssts.iter().map(|s| s.id()).collect();
 
