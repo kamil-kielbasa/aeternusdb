@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Record"],"fn":["record_cmp"],"struct":["MergeHeapEntry","MergeIterator","PointEntry","RangeTombstone"]};
+window.SIDEBAR_ITEMS = {"enum":["Record","RecordEntry"],"fn":["record_cmp"],"struct":["MergeHeapEntry","MergeIterator","PointEntry","RangeTombstone"]};
