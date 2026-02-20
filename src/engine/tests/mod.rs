@@ -28,3 +28,7 @@ mod tests_file_cleanup;
 mod tests_hardening_edge;
 mod tests_mvcc_scan;
 mod tests_scan_edge;
+
+// Priority 4 — coverage
+mod tests_tombstone_gc;
+mod tests_utils_coverage;

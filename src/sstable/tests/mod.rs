@@ -9,3 +9,6 @@ mod tests_corruption;
 
 // Priority 3 — hardening (edge cases)
 mod tests_hardening;
+
+// Priority 4 — coverage
+mod tests_properties;

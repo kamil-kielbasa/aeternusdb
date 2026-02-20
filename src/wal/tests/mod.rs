@@ -7,3 +7,6 @@ mod tests_truncation;
 
 // Priority 2 — robustness tests
 mod tests_rotation_edge;
+
+// Priority 4 — coverage
+mod tests_coverage;
