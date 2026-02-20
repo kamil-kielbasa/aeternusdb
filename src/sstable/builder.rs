@@ -44,7 +44,6 @@ use std::{
 
 use crate::encoding;
 use bloomfilter::Bloom;
-use crc32fast::Hasher as Crc32;
 
 use crate::engine::{PointEntry, RangeTombstone};
 
@@ -102,7 +101,9 @@ impl BuildStats {
             creation_timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_nanos() as u64,
+                .as_nanos()
+                .try_into()
+                .unwrap_or(u64::MAX),
             record_count: self.record_count,
             tombstone_count: self.tombstone_count,
             range_tombstones_count: range_count as u64,
@@ -129,11 +130,10 @@ fn write_checksummed_block(
     data: &[u8],
 ) -> Result<(u64, usize), SSTableError> {
     let offset = writer.stream_position()?;
-    let len = data.len() as u32;
+    let len = u32::try_from(data.len())
+        .map_err(|_| SSTableError::Internal(format!("block too large: {} bytes", data.len())))?;
 
-    let mut hasher = Crc32::new();
-    hasher.update(data);
-    let checksum = hasher.finalize();
+    let checksum = super::crc32(data);
 
     writer.write_all(&len.to_le_bytes())?;
     writer.write_all(data)?;
@@ -153,9 +153,7 @@ fn write_header(writer: &mut impl Write) -> Result<(), SSTableError> {
         header_crc: 0,
     };
     let zeroed_bytes = encoding::encode_to_vec(&header)?;
-    let mut hasher = Crc32::new();
-    hasher.update(&zeroed_bytes);
-    let inner_crc = hasher.finalize();
+    let inner_crc = super::crc32(&zeroed_bytes);
 
     // Step 2: re-encode with inner CRC embedded, compute outer CRC.
     let header = SSTableHeader {
@@ -163,9 +161,7 @@ fn write_header(writer: &mut impl Write) -> Result<(), SSTableError> {
         ..header
     };
     let header_bytes = encoding::encode_to_vec(&header)?;
-    let mut hasher = Crc32::new();
-    hasher.update(&header_bytes);
-    let outer_crc = hasher.finalize();
+    let outer_crc = super::crc32(&header_bytes);
 
     writer.write_all(&header_bytes)?;
     writer.write_all(&outer_crc.to_le_bytes())?;
@@ -188,7 +184,9 @@ fn flush_data_block(
     let (offset, data_len) = write_checksummed_block(writer, &block_bytes)?;
 
     index_entries.push(SSTableIndexEntry {
-        separator_key: block_first_key.take().unwrap(),
+        separator_key: block_first_key.take().ok_or_else(|| {
+            SSTableError::Internal("flush_data_block: no first key recorded for block".into())
+        })?,
         handle: BlockHandle {
             offset,
             size: (SST_DATA_BLOCK_LEN_SIZE + data_len + SST_DATA_BLOCK_CHECKSUM_SIZE) as u64,
@@ -236,8 +234,11 @@ fn write_data_blocks(
 
         // Encode point cell.
         let cell = SSTableCell {
-            key_len: entry.key.len() as u32,
-            value_len: entry.value.as_ref().map_or(0, |v| v.len()) as u32,
+            key_len: u32::try_from(entry.key.len()).map_err(|_| {
+                SSTableError::Internal(format!("key too large: {} bytes", entry.key.len()))
+            })?,
+            value_len: u32::try_from(entry.value.as_ref().map_or(0, |v| v.len()))
+                .map_err(|_| SSTableError::Internal("value too large".into()))?,
             timestamp: entry.timestamp,
             is_delete: entry.value.is_none(),
             lsn: entry.lsn,
@@ -344,9 +345,7 @@ fn write_footer(
     };
 
     let footer_bytes = encoding::encode_to_vec(&footer)?;
-    let mut hasher = Crc32::new();
-    hasher.update(&footer_bytes);
-    let footer_crc = hasher.finalize();
+    let footer_crc = super::crc32(&footer_bytes);
 
     let footer_with_crc = SSTableFooter {
         footer_crc32: footer_crc,

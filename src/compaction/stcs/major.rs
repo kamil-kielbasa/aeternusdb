@@ -52,7 +52,7 @@ pub fn compact(
         return Ok(None);
     }
 
-    let ids: Vec<u64> = sstables.iter().map(|s| s.id).collect();
+    let ids: Vec<u64> = sstables.iter().map(|s| s.id()).collect();
     info!(
         sstable_count = sstables.len(),
         ?ids,
@@ -80,7 +80,7 @@ fn execute(
     data_dir: &str,
 ) -> Result<CompactionResult, CompactionError> {
     let sst_refs: Vec<&SSTable> = sstables.iter().collect();
-    let removed_ids: Vec<u64> = sstables.iter().map(|s| s.id).collect();
+    let removed_ids: Vec<u64> = sstables.iter().map(|s| s.id()).collect();
 
     // Phase 1: Collect all range tombstones upfront from all SSTables.
     // We need them before processing point entries so we can check coverage.

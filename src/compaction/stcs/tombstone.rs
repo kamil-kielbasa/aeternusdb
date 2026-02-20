@@ -50,7 +50,7 @@ pub fn maybe_compact(
     let tombstone_total =
         target.properties.tombstone_count + target.properties.range_tombstones_count;
     info!(
-        target_id = target.id,
+        target_id = target.id(),
         tombstone_count = tombstone_total,
         record_count = target.properties.record_count,
         "tombstone compaction: starting rewrite"
@@ -63,7 +63,7 @@ pub fn maybe_compact(
     // so the caller's `while compact() {}` loop terminates.
     if result.removed_ids.is_empty() {
         debug!(
-            target_id = target.id,
+            target_id = target.id(),
             "tombstone compaction: candidate selected but no tombstones could be dropped"
         );
         return Ok(None);
@@ -147,7 +147,7 @@ fn execute(
     let older_sstables: Vec<&SSTable> = sstables
         .iter()
         .enumerate()
-        .filter(|(i, _)| *i != target_idx && sstables[*i].id < target.id)
+        .filter(|(i, _)| *i != target_idx && sstables[*i].id() < target.id())
         .map(|(_, s)| s)
         .collect();
 
@@ -279,7 +279,7 @@ fn execute(
         });
     }
 
-    let removed_ids = vec![target.id];
+    let removed_ids = vec![target.id()];
     finalize_compaction(
         manifest,
         data_dir,

@@ -95,6 +95,7 @@ use bloomfilter::Bloom;
 use crc32fast::Hasher as Crc32;
 use memmap2::Mmap;
 use thiserror::Error;
+use tracing::{debug, info, warn};
 
 // ------------------------------------------------------------------------------------------------
 // Constants
@@ -109,12 +110,23 @@ const SST_HDR_SIZE: usize = 12;
 const SST_DATA_BLOCK_LEN_SIZE: usize = 4;
 const SST_DATA_BLOCK_CHECKSUM_SIZE: usize = 4;
 
+/// Compute a CRC-32C checksum over a byte slice.
+///
+/// Centralises the three-line `Hasher::new → update → finalize` pattern
+/// used across the reader and builder.
+pub(crate) fn crc32(data: &[u8]) -> u32 {
+    let mut hasher = Crc32::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
 // ------------------------------------------------------------------------------------------------
 // Error Types
 // ------------------------------------------------------------------------------------------------
 
 /// Errors returned by SSTable operations (read, write, build).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SSTableError {
     /// Underlying I/O error.
     #[error("I/O error: {0}")]
@@ -139,7 +151,7 @@ pub enum SSTableError {
 
 /// SSTable file header, written at the beginning of the SSTable.
 /// Contains a magic number, version, and CRC32 checksum for integrity.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct SSTableHeader {
     /// Magic bytes to identify SSTable format (`b"SST0"`).
     magic: [u8; 4],
@@ -152,24 +164,28 @@ pub(crate) struct SSTableHeader {
 }
 
 /// Represents a data block in the SSTable, which contains serialized key-value entries.
+#[derive(Debug)]
 pub(crate) struct SSTableDataBlock {
     /// Raw serialized block data.
     pub(crate) data: Vec<u8>,
 }
 
 /// Represents a Bloom filter block used to quickly check the presence of point keys.
+#[derive(Debug)]
 pub(crate) struct SSTableBloomBlock {
     /// Serialized bloom filter bytes.
     pub(crate) data: Vec<u8>,
 }
 
 /// Represents a block containing range tombstones.
+#[derive(Debug)]
 pub(crate) struct SSTableRangeTombstoneDataBlock {
     /// List of serialized range tombstone cells.
     pub(crate) data: Vec<SSTableRangeTombstoneCell>,
 }
 
 /// Metadata block containing SSTable-level properties and statistics.
+#[derive(Debug)]
 pub struct SSTablePropertiesBlock {
     /// Creation timestamp (UNIX epoch nanos).
     pub creation_timestamp: u64,
@@ -203,6 +219,7 @@ pub struct SSTablePropertiesBlock {
 }
 
 /// Index entry pointing to a specific data block.
+#[derive(Debug)]
 pub(crate) struct SSTableIndexEntry {
     /// Key that separates this block from the next in sorted order.
     pub(crate) separator_key: Vec<u8>,
@@ -212,6 +229,7 @@ pub(crate) struct SSTableIndexEntry {
 }
 
 /// SSTable footer, stored at the very end of the file.
+#[derive(Debug)]
 pub(crate) struct SSTableFooter {
     /// Handle of the metaindex block, containing references to:
     /// - bloom filter block
@@ -230,6 +248,7 @@ pub(crate) struct SSTableFooter {
 }
 
 /// Represents a single key-value entry (or tombstone) in a data block.
+#[derive(Debug)]
 pub(crate) struct SSTableCell {
     /// Length of the key in bytes.
     pub(crate) key_len: u32,
@@ -248,6 +267,7 @@ pub(crate) struct SSTableCell {
 }
 
 /// Represents a range tombstone marking deletion of keys in `[start_key, end_key)`.
+#[derive(Debug)]
 pub(crate) struct SSTableRangeTombstoneCell {
     /// Start key of the deleted range (inclusive).
     pub(crate) start_key: Vec<u8>,
@@ -282,303 +302,8 @@ pub(crate) struct MetaIndexEntry {
     pub(crate) handle: BlockHandle,
 }
 
-// ------------------------------------------------------------------------------------------------
-// Encoding implementations
-// ------------------------------------------------------------------------------------------------
-
-impl encoding::Encode for BlockHandle {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.offset, buf)?;
-        encoding::Encode::encode_to(&self.size, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for BlockHandle {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (offset, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (size, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        Ok((Self { offset, size }, off))
-    }
-}
-
-impl encoding::Encode for SSTableHeader {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.magic, buf)?;
-        encoding::Encode::encode_to(&self.version, buf)?;
-        encoding::Encode::encode_to(&self.header_crc, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableHeader {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (magic, n) = <[u8; 4]>::decode_from(&buf[off..])?;
-        off += n;
-        let (version, n) = u32::decode_from(&buf[off..])?;
-        off += n;
-        let (header_crc, n) = u32::decode_from(&buf[off..])?;
-        off += n;
-        Ok((
-            Self {
-                magic,
-                version,
-                header_crc,
-            },
-            off,
-        ))
-    }
-}
-
-impl encoding::Encode for SSTableDataBlock {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.data, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableDataBlock {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let (data, n) = <Vec<u8>>::decode_from(buf)?;
-        Ok((Self { data }, n))
-    }
-}
-
-impl encoding::Encode for SSTableBloomBlock {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.data, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableBloomBlock {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let (data, n) = <Vec<u8>>::decode_from(buf)?;
-        Ok((Self { data }, n))
-    }
-}
-
-impl encoding::Encode for SSTableCell {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.key_len, buf)?;
-        encoding::Encode::encode_to(&self.value_len, buf)?;
-        encoding::Encode::encode_to(&self.timestamp, buf)?;
-        encoding::Encode::encode_to(&self.is_delete, buf)?;
-        encoding::Encode::encode_to(&self.lsn, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableCell {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (key_len, n) = u32::decode_from(&buf[off..])?;
-        off += n;
-        let (value_len, n) = u32::decode_from(&buf[off..])?;
-        off += n;
-        let (timestamp, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (is_delete, n) = bool::decode_from(&buf[off..])?;
-        off += n;
-        let (lsn, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        Ok((
-            Self {
-                key_len,
-                value_len,
-                timestamp,
-                is_delete,
-                lsn,
-            },
-            off,
-        ))
-    }
-}
-
-impl encoding::Encode for SSTableRangeTombstoneCell {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.start_key, buf)?;
-        encoding::Encode::encode_to(&self.end_key, buf)?;
-        encoding::Encode::encode_to(&self.timestamp, buf)?;
-        encoding::Encode::encode_to(&self.lsn, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableRangeTombstoneCell {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (start_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
-        off += n;
-        let (end_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
-        off += n;
-        let (timestamp, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (lsn, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        Ok((
-            Self {
-                start_key,
-                end_key,
-                timestamp,
-                lsn,
-            },
-            off,
-        ))
-    }
-}
-
-impl encoding::Encode for SSTableRangeTombstoneDataBlock {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::encode_vec(&self.data, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableRangeTombstoneDataBlock {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let (data, n) = encoding::decode_vec::<SSTableRangeTombstoneCell>(buf)?;
-        Ok((Self { data }, n))
-    }
-}
-
-impl encoding::Encode for SSTablePropertiesBlock {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.creation_timestamp, buf)?;
-        encoding::Encode::encode_to(&self.record_count, buf)?;
-        encoding::Encode::encode_to(&self.tombstone_count, buf)?;
-        encoding::Encode::encode_to(&self.range_tombstones_count, buf)?;
-        encoding::Encode::encode_to(&self.min_lsn, buf)?;
-        encoding::Encode::encode_to(&self.max_lsn, buf)?;
-        encoding::Encode::encode_to(&self.min_timestamp, buf)?;
-        encoding::Encode::encode_to(&self.max_timestamp, buf)?;
-        encoding::Encode::encode_to(&self.min_key, buf)?;
-        encoding::Encode::encode_to(&self.max_key, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTablePropertiesBlock {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (creation_timestamp, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (record_count, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (tombstone_count, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (range_tombstones_count, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (min_lsn, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (max_lsn, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (min_timestamp, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (max_timestamp, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (min_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
-        off += n;
-        let (max_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
-        off += n;
-        Ok((
-            Self {
-                creation_timestamp,
-                record_count,
-                tombstone_count,
-                range_tombstones_count,
-                min_lsn,
-                max_lsn,
-                min_timestamp,
-                max_timestamp,
-                min_key,
-                max_key,
-            },
-            off,
-        ))
-    }
-}
-
-impl encoding::Encode for SSTableIndexEntry {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.separator_key, buf)?;
-        encoding::Encode::encode_to(&self.handle, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableIndexEntry {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (separator_key, n) = <Vec<u8>>::decode_from(&buf[off..])?;
-        off += n;
-        let (handle, n) = BlockHandle::decode_from(&buf[off..])?;
-        off += n;
-        Ok((
-            Self {
-                separator_key,
-                handle,
-            },
-            off,
-        ))
-    }
-}
-
-impl encoding::Encode for MetaIndexEntry {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.name, buf)?;
-        encoding::Encode::encode_to(&self.handle, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for MetaIndexEntry {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (name, n) = String::decode_from(&buf[off..])?;
-        off += n;
-        let (handle, n) = BlockHandle::decode_from(&buf[off..])?;
-        off += n;
-        Ok((Self { name, handle }, off))
-    }
-}
-
-impl encoding::Encode for SSTableFooter {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        encoding::Encode::encode_to(&self.metaindex, buf)?;
-        encoding::Encode::encode_to(&self.index, buf)?;
-        encoding::Encode::encode_to(&self.total_file_size, buf)?;
-        encoding::Encode::encode_to(&self.footer_crc32, buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for SSTableFooter {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let mut off = 0;
-        let (metaindex, n) = BlockHandle::decode_from(&buf[off..])?;
-        off += n;
-        let (index, n) = BlockHandle::decode_from(&buf[off..])?;
-        off += n;
-        let (total_file_size, n) = u64::decode_from(&buf[off..])?;
-        off += n;
-        let (footer_crc32, n) = u32::decode_from(&buf[off..])?;
-        off += n;
-        Ok((
-            Self {
-                metaindex,
-                index,
-                total_file_size,
-                footer_crc32,
-            },
-            off,
-        ))
-    }
-}
+// Encode / Decode implementations live in a separate file for readability.
+mod encoding_impls;
 
 // ------------------------------------------------------------------------------------------------
 // GetResult
@@ -619,6 +344,9 @@ pub enum GetResult {
 
 impl GetResult {
     /// Returns the **LSN** (logical sequence number) associated with this get result.
+    ///
+    /// Returns `0` for [`GetResult::NotFound`] — callers should match on the
+    /// variant before relying on the LSN value.
     pub fn lsn(&self) -> u64 {
         match self {
             Self::Put { lsn, .. } => *lsn,
@@ -629,6 +357,9 @@ impl GetResult {
     }
 
     /// Returns the **timestamp** associated with this get result.
+    ///
+    /// Returns `0` for [`GetResult::NotFound`] — callers should match on the
+    /// variant before relying on the timestamp value.
     pub fn timestamp(&self) -> u64 {
         match self {
             Self::Put { timestamp, .. } => *timestamp,
@@ -636,6 +367,14 @@ impl GetResult {
             Self::RangeDelete { timestamp, .. } => *timestamp,
             Self::NotFound => 0,
         }
+    }
+
+    /// Returns `true` if `self` is *newer* than `other` in MVCC ordering.
+    ///
+    /// Comparison order: higher LSN wins; on tie, higher timestamp wins.
+    fn is_newer_than(&self, other_lsn: u64, other_ts: u64) -> bool {
+        let (lsn, ts) = (self.lsn(), self.timestamp());
+        lsn > other_lsn || (lsn == other_lsn && ts > other_ts)
     }
 }
 
@@ -647,10 +386,10 @@ impl GetResult {
 pub struct SSTable {
     /// Unique identifier assigned by the engine (from the manifest).
     /// Set to 0 by `SSTable::open()` — the engine sets the correct value after loading.
-    pub id: u64,
+    id: u64,
 
     /// Memory-mapped file containing the full SSTable bytes.
-    pub mmap: Mmap,
+    pub(crate) mmap: Mmap,
 
     /// Parsed header block containing magic/version information.
     pub(crate) header: SSTableHeader,
@@ -659,7 +398,7 @@ pub struct SSTable {
     pub(crate) bloom: SSTableBloomBlock,
 
     /// Properties block with statistics and metadata.
-    pub properties: SSTablePropertiesBlock,
+    pub(crate) properties: SSTablePropertiesBlock,
 
     /// Range delete tombstone block.
     pub(crate) range_deletes: SSTableRangeTombstoneDataBlock,
@@ -672,9 +411,71 @@ pub struct SSTable {
 }
 
 impl SSTable {
+    /// Returns the unique identifier assigned to this SSTable by the engine.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Sets the unique identifier for this SSTable.
+    ///
+    /// Called by the engine after loading to assign the manifest-tracked id.
+    pub(crate) fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
+
     /// Returns the on-disk file size of this SSTable in bytes.
     pub fn file_size(&self) -> u64 {
         self.footer.total_file_size
+    }
+
+    /// Returns the maximum LSN stored in this SSTable.
+    pub fn max_lsn(&self) -> u64 {
+        self.properties.max_lsn
+    }
+
+    /// Returns the minimum LSN stored in this SSTable.
+    pub fn min_lsn(&self) -> u64 {
+        self.properties.min_lsn
+    }
+
+    /// Returns the total number of point records in this SSTable.
+    pub fn record_count(&self) -> u64 {
+        self.properties.record_count
+    }
+
+    /// Returns the number of point tombstones (deletes) in this SSTable.
+    pub fn tombstone_count(&self) -> u64 {
+        self.properties.tombstone_count
+    }
+
+    /// Returns the number of range tombstones in this SSTable.
+    pub fn range_tombstone_count(&self) -> u64 {
+        self.properties.range_tombstones_count
+    }
+
+    /// Returns the minimum key stored in this SSTable.
+    pub fn min_key(&self) -> &[u8] {
+        &self.properties.min_key
+    }
+
+    /// Returns the maximum key stored in this SSTable.
+    pub fn max_key(&self) -> &[u8] {
+        &self.properties.max_key
+    }
+
+    /// Returns the creation timestamp of this SSTable (UNIX epoch nanos).
+    pub fn creation_timestamp(&self) -> u64 {
+        self.properties.creation_timestamp
+    }
+
+    /// Returns the minimum timestamp among entries in this SSTable.
+    pub fn min_timestamp(&self) -> u64 {
+        self.properties.min_timestamp
+    }
+
+    /// Returns the maximum timestamp among entries in this SSTable.
+    pub fn max_timestamp(&self) -> u64 {
+        self.properties.max_timestamp
     }
 
     /// Checks whether `key` *might* exist in this SSTable according to the
@@ -753,6 +554,9 @@ impl SSTable {
     /// - The mmap is read-only
     /// - All block boundaries are verified before slicing
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SSTableError> {
+        let path = path.as_ref();
+        debug!(?path, "opening SSTable");
+
         let file = File::open(path)?;
 
         let mmap = unsafe { Mmap::map(&file)? };
@@ -769,11 +573,15 @@ impl SSTable {
 
         let header_bytes = encoding::encode_to_vec(&header)?;
 
-        let mut hasher = Crc32::new();
-        hasher.update(&header_bytes);
-        let header_comp_checksum = hasher.finalize();
+        let header_comp_checksum = crc32(&header_bytes);
 
         if header_checksum != header_comp_checksum {
+            warn!(
+                ?path,
+                expected = header_checksum,
+                actual = header_comp_checksum,
+                "header checksum mismatch"
+            );
             return Err(SSTableError::ChecksumMismatch);
         }
 
@@ -797,11 +605,15 @@ impl SSTable {
 
         let footer_bytes = encoding::encode_to_vec(&footer)?;
 
-        let mut hasher = Crc32::new();
-        hasher.update(&footer_bytes);
-        let footer_comp_checksum = hasher.finalize();
+        let footer_comp_checksum = crc32(&footer_bytes);
 
         if footer_checksum != footer_comp_checksum {
+            warn!(
+                ?path,
+                expected = footer_checksum,
+                actual = footer_comp_checksum,
+                "footer checksum mismatch"
+            );
             return Err(SSTableError::ChecksumMismatch);
         }
 
@@ -809,13 +621,13 @@ impl SSTable {
         let (meta_entries, _) = encoding::decode_vec::<MetaIndexEntry>(&metaindex_data)?;
 
         let mut bloom_block: Option<BlockHandle> = None;
-        let mut propertires_block: Option<BlockHandle> = None;
+        let mut properties_block: Option<BlockHandle> = None;
         let mut range_deletes_block: Option<BlockHandle> = None;
 
         for entry in meta_entries {
             match entry.name.as_str() {
                 "filter.bloom" => bloom_block = Some(entry.handle),
-                "meta.properties" => propertires_block = Some(entry.handle),
+                "meta.properties" => properties_block = Some(entry.handle),
                 "meta.range_deletes" => range_deletes_block = Some(entry.handle),
                 _ => return Err(SSTableError::Internal("Unexpected match".into())),
             }
@@ -835,7 +647,7 @@ impl SSTable {
             }
         };
 
-        let properties = if let Some(pb) = propertires_block {
+        let properties = if let Some(pb) = properties_block {
             let pbytes = Self::read_block_bytes(&mmap, &pb)?;
             let (properties, _) = encoding::decode_from_slice::<SSTablePropertiesBlock>(&pbytes)?;
             properties
@@ -853,6 +665,13 @@ impl SSTable {
 
         let index_bytes = Self::read_block_bytes(&mmap, &footer.index)?;
         let (index_entries, _) = encoding::decode_vec::<SSTableIndexEntry>(&index_bytes)?;
+
+        info!(
+            ?path,
+            file_size = footer.total_file_size,
+            record_count = properties.record_count,
+            "SSTable opened"
+        );
 
         Ok(Self {
             id: 0,
@@ -960,90 +779,28 @@ impl SSTable {
             };
 
             latest = Some(match &latest {
-                Some(existing) => {
-                    if candidate.lsn() > existing.lsn() {
-                        candidate
-                    } else if candidate.lsn() == existing.lsn() {
-                        // tie-breaker by timestamp
-                        if candidate.timestamp() > existing.timestamp() {
-                            candidate
-                        } else {
-                            existing.clone()
-                        }
-                    } else {
-                        existing.clone()
-                    }
+                Some(existing) if candidate.is_newer_than(existing.lsn(), existing.timestamp()) => {
+                    candidate
                 }
+                Some(existing) => existing.clone(),
                 None => candidate,
             });
         }
 
         // 5) Merge point vs range tombstone (LSN + timestamp)
-        match (latest, range_info) {
-            // No point, no range delete → not found
+        let range_delete =
+            range_info.map(|(lsn, timestamp)| GetResult::RangeDelete { lsn, timestamp });
+
+        match (latest, range_delete) {
             (None, None) => Ok(GetResult::NotFound),
-
-            // Point exists, no range delete → point result wins
             (Some(r), None) => Ok(r),
-
-            // No point entry, but we have a range delete
-            (None, Some((lsn, timestamp))) => Ok(GetResult::RangeDelete { lsn, timestamp }),
-
-            // Everything else: point_result = Some(_), range_lsn = Some(_)
-            (Some(point), Some((r_lsn, r_ts))) => {
-                let result = match point {
-                    GetResult::Put {
-                        value,
-                        lsn: p_lsn,
-                        timestamp: p_ts,
-                    } => {
-                        if r_lsn > p_lsn || (r_lsn == p_lsn && r_ts > p_ts) {
-                            GetResult::RangeDelete {
-                                lsn: r_lsn,
-                                timestamp: r_ts,
-                            }
-                        } else {
-                            GetResult::Put {
-                                value,
-                                lsn: p_lsn,
-                                timestamp: p_ts,
-                            }
-                        }
-                    }
-                    GetResult::Delete {
-                        lsn: d_lsn,
-                        timestamp: d_ts,
-                    } => {
-                        if r_lsn > d_lsn || (r_lsn == d_lsn && r_ts > d_ts) {
-                            GetResult::RangeDelete {
-                                lsn: r_lsn,
-                                timestamp: r_ts,
-                            }
-                        } else {
-                            GetResult::Delete {
-                                lsn: d_lsn,
-                                timestamp: d_ts,
-                            }
-                        }
-                    }
-                    GetResult::RangeDelete {
-                        lsn: rd_lsn,
-                        timestamp: rd_ts,
-                    } => {
-                        let (lsn, ts) = if r_lsn > rd_lsn || (r_lsn == rd_lsn && r_ts > rd_ts) {
-                            (r_lsn, r_ts)
-                        } else {
-                            (rd_lsn, rd_ts)
-                        };
-                        GetResult::RangeDelete { lsn, timestamp: ts }
-                    }
-                    GetResult::NotFound => GetResult::RangeDelete {
-                        lsn: r_lsn,
-                        timestamp: r_ts,
-                    },
-                };
-
-                Ok(result)
+            (None, Some(rd)) => Ok(rd),
+            (Some(point), Some(rd)) => {
+                if rd.is_newer_than(point.lsn(), point.timestamp()) {
+                    Ok(rd)
+                } else {
+                    Ok(point)
+                }
             }
         }
     }

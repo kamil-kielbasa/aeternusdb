@@ -137,7 +137,7 @@ impl BlockIterator {
                     self.cursor = pos + key_len + value_len;
                 }
                 Err(e) => {
-                    tracing::error!(cursor = self.cursor, ?e, "decode error during seek");
+                    tracing::warn!(cursor = self.cursor, ?e, "decode error during seek");
                     self.cursor = self.data.len();
                     return;
                 }
@@ -339,7 +339,11 @@ impl<'a> ScanIterator<'a> {
             // end of block - load next
             match self.load_next_block() {
                 Ok(true) => {}
-                Ok(false) | Err(_) => return None,
+                Ok(false) => return None,
+                Err(e) => {
+                    tracing::warn!(?e, "error loading next block during scan");
+                    return None;
+                }
             }
         }
     }

@@ -35,7 +35,7 @@ pub fn maybe_compact(
         }
     };
 
-    let selected_ids: Vec<u64> = selected.iter().map(|&i| sstables[i].id).collect();
+    let selected_ids: Vec<u64> = selected.iter().map(|&i| sstables[i].id()).collect();
     info!(
         selected_count = selected.len(),
         ?selected_ids,
@@ -65,7 +65,7 @@ fn execute(
 ) -> Result<CompactionResult, CompactionError> {
     let selected_ssts: Vec<&SSTable> = selected_indices.iter().map(|&i| &sstables[i]).collect();
 
-    let removed_ids: Vec<u64> = selected_ssts.iter().map(|s| s.id).collect();
+    let removed_ids: Vec<u64> = selected_ssts.iter().map(|s| s.id()).collect();
 
     // Streaming merge over all selected SSTables.
     let iters = full_range_scan_iters(&selected_ssts)?;

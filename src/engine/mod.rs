@@ -261,7 +261,7 @@ impl Engine {
         let mut sstable_handles = Vec::new();
         for sstable_entry in sstables {
             let mut sstable = SSTable::open(&sstable_entry.path)?;
-            sstable.id = sstable_entry.id;
+            sstable.set_id(sstable_entry.id);
             sstable_handles.push(sstable);
         }
 
@@ -279,8 +279,8 @@ impl Engine {
         }
 
         for sstable in sstable_handles.iter() {
-            if sstable.properties.max_lsn > max_lsn {
-                max_lsn = sstable.properties.max_lsn;
+            if sstable.max_lsn() > max_lsn {
+                max_lsn = sstable.max_lsn();
             }
         }
 
@@ -297,7 +297,7 @@ impl Engine {
         // Sort SSTables by max_lsn descending.  This lets get()
         // early-terminate: once we find a result at LSN L, any SSTable
         // whose max_lsn ≤ L cannot contain a newer version of any key.
-        sstable_handles.sort_by(|a, b| b.properties.max_lsn.cmp(&a.properties.max_lsn));
+        sstable_handles.sort_by_key(|s| std::cmp::Reverse(s.max_lsn()));
 
         let inner = EngineInner {
             manifest,
@@ -485,7 +485,7 @@ impl Engine {
         for sst in &inner.sstables {
             // Early termination: this SSTable (and all after it) have
             // max_lsn ≤ best_lsn, so they can't contain a newer version.
-            if sst.properties.max_lsn <= best_lsn {
+            if sst.max_lsn() <= best_lsn {
                 break;
             }
 
@@ -729,7 +729,7 @@ impl Engine {
 
         // Load the newly created SSTable
         let mut sstable = SSTable::open(&sstable_path)?;
-        sstable.id = sstable_id;
+        sstable.set_id(sstable_id);
         // Insert at beginning to maintain sorted order (newest first)
         inner.sstables.insert(0, sstable);
 
@@ -859,12 +859,12 @@ impl Engine {
         // Remove consumed SSTables.
         inner
             .sstables
-            .retain(|sst| !cr.removed_ids.contains(&sst.id));
+            .retain(|sst| !cr.removed_ids.contains(&sst.id()));
 
         // Load and insert new SSTable if one was produced.
         if let Some(ref path) = cr.new_sst_path {
             let mut new_sst = SSTable::open(path)?;
-            new_sst.id = cr.new_sst_id.unwrap_or(0);
+            new_sst.set_id(cr.new_sst_id.unwrap_or(0));
             inner.sstables.push(new_sst);
         }
 
@@ -872,7 +872,7 @@ impl Engine {
         // invariant used by get().
         inner
             .sstables
-            .sort_by(|a, b| b.properties.max_lsn.cmp(&a.properties.max_lsn));
+            .sort_by_key(|s| std::cmp::Reverse(s.max_lsn()));
 
         Ok(())
     }
