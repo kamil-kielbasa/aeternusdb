@@ -17,6 +17,7 @@ use criterion::{
 };
 
 use aeternusdb::{Db, DbConfig};
+use std::sync::Arc;
 use tempfile::TempDir;
 
 // ------------------------------------------------------------------------------------------------
@@ -552,6 +553,486 @@ fn bench_value_sizes(c: &mut Criterion) {
 }
 
 // ================================================================================================
+// Concurrent access benchmarks
+// ================================================================================================
+
+/// Benchmark group for concurrent (multi-threaded) database access.
+///
+/// `Db` is `Send + Sync` and designed for shared access via `Arc<Db>`. These benchmarks
+/// verify that read throughput scales with reader count and measure the impact of
+/// concurrent writes on read latency.
+///
+/// # Sub-benchmarks
+///
+/// ## `readers/{1,2,4}`
+///
+/// **Scenario:** N threads perform random point reads against 10,000 keys in SSTables.
+/// Each thread executes 1,000 reads. The database is shared via `Arc<Db>`.
+///
+/// **What it measures:** Read throughput scaling under contention. Since reads are
+/// lock-free in an LSM-tree (immutable SSTables, snapshot isolation), throughput
+/// should scale near-linearly with thread count.
+///
+/// **Expected behaviour:** Total wall-clock time should decrease with more threads
+/// (or remain roughly constant if CPU-bound). Per-read latency stays stable.
+///
+/// ## `read_under_write/{1_writer,2_writers}`
+///
+/// **Scenario:** 2 reader threads perform random reads while 1 or 2 writer threads
+/// concurrently insert new keys. Measures the total time for all threads to complete.
+///
+/// **What it measures:** Read latency degradation under write pressure. Writes acquire
+/// the WAL mutex and trigger memtable insertions; this benchmark reveals whether that
+/// contention spills over to readers.
+///
+/// **Expected behaviour:** Reads should remain fast because they don't share locks with
+/// the write path (memtable reads are concurrent, SSTable reads are immutable). Total
+/// time is dominated by writer fsyncs.
+fn bench_concurrent(c: &mut Criterion) {
+    let mut group = c.benchmark_group("concurrent");
+    group.sample_size(10);
+
+    let reads_per_thread = 1_000u64;
+    let n = 10_000u64;
+
+    // --- concurrent readers only ---
+    for &num_readers in &[1u32, 2, 4] {
+        group.bench_function(BenchmarkId::new("readers", num_readers), |b| {
+            b.iter_batched(
+                || {
+                    let dir = TempDir::new().unwrap();
+                    prepopulate(dir.path(), n, VALUE_128B);
+                    let db = Arc::new(Db::open(dir.path(), DbConfig::default()).unwrap());
+                    (dir, db)
+                },
+                |(_dir, db)| {
+                    let mut handles = Vec::new();
+                    for t in 0..num_readers {
+                        let db = Arc::clone(&db);
+                        handles.push(std::thread::spawn(move || {
+                            for i in 0..reads_per_thread {
+                                let key = make_key((i + t as u64 * 1000) % n);
+                                let _ = black_box(db.get(&key).unwrap());
+                            }
+                        }));
+                    }
+                    for h in handles {
+                        h.join().unwrap();
+                    }
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // --- readers under write pressure ---
+    for &num_writers in &[1u32, 2] {
+        group.bench_function(
+            BenchmarkId::new("read_under_write", format!("{num_writers}_writer")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().unwrap();
+                        prepopulate(dir.path(), n, VALUE_128B);
+                        let db = Arc::new(
+                            Db::open(
+                                dir.path(),
+                                DbConfig {
+                                    write_buffer_size: 64 * 1024 * 1024,
+                                    thread_pool_size: 2,
+                                    ..DbConfig::default()
+                                },
+                            )
+                            .unwrap(),
+                        );
+                        (dir, db)
+                    },
+                    |(_dir, db)| {
+                        let mut handles = Vec::new();
+                        // Spawn 2 reader threads.
+                        for t in 0..2u32 {
+                            let db = Arc::clone(&db);
+                            handles.push(std::thread::spawn(move || {
+                                for i in 0..reads_per_thread {
+                                    let key = make_key((i + t as u64 * 1000) % n);
+                                    let _ = black_box(db.get(&key).unwrap());
+                                }
+                            }));
+                        }
+                        // Spawn writer threads.
+                        for w in 0..num_writers {
+                            let db = Arc::clone(&db);
+                            handles.push(std::thread::spawn(move || {
+                                for i in 0..200u64 {
+                                    let key = make_key(n + w as u64 * 1000 + i);
+                                    db.put(&key, VALUE_128B).unwrap();
+                                }
+                            }));
+                        }
+                        for h in handles {
+                            h.join().unwrap();
+                        }
+                    },
+                    BatchSize::PerIteration,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ================================================================================================
+// Overwrite (update) benchmarks
+// ================================================================================================
+
+/// Benchmark group for overwriting existing keys.
+///
+/// # Sub-benchmarks
+///
+/// ## `update_memtable`
+///
+/// **Scenario:** Inserts 1,000 keys, then repeatedly overwrites random existing keys.
+/// Large buffer ensures everything stays in the memtable.
+///
+/// **What it measures:** Cost of updating a key that already exists in the memtable.
+/// The skip-list must handle version shadowing (newer LSN overwrites older).
+///
+/// **Expected behaviour:** Identical to fresh inserts — the WAL fsync dominates.
+///
+/// ## `update_sstable`
+///
+/// **Scenario:** Prepopulates 5,000 keys into SSTables, reopens, then overwrites
+/// random existing keys. The new version lands in the memtable while the old version
+/// remains in SSTables until compaction.
+///
+/// **What it measures:** Write-path cost when old versions exist on disk. Verifies
+/// that writes remain O(1) regardless of SSTable state (LSM append-only property).
+///
+/// **Expected behaviour:** Same as fresh inserts — writes never read from SSTables.
+fn bench_overwrite(c: &mut Criterion) {
+    let mut group = c.benchmark_group("overwrite");
+
+    // --- update keys in memtable ---
+    group.bench_function("update_memtable", |b| {
+        let dir = TempDir::new().unwrap();
+        let db = open_memtable_only(dir.path());
+        let n = 1_000u64;
+        for i in 0..n {
+            db.put(&make_key(i), VALUE_128B).unwrap();
+        }
+        let mut seq = 0u64;
+        b.iter(|| {
+            let key = make_key(seq % n);
+            db.put(black_box(&key), black_box(VALUE_128B.as_slice()))
+                .unwrap();
+            seq += 1;
+        });
+        db.close().unwrap();
+    });
+
+    // --- update keys that exist in SSTables ---
+    group.bench_function("update_sstable", |b| {
+        let dir = TempDir::new().unwrap();
+        let n = 5_000u64;
+        prepopulate(dir.path(), n, VALUE_128B);
+        let db = Db::open(
+            dir.path(),
+            DbConfig {
+                write_buffer_size: 64 * 1024 * 1024,
+                thread_pool_size: 1,
+                ..DbConfig::default()
+            },
+        )
+        .unwrap();
+        let mut seq = 0u64;
+        b.iter(|| {
+            let key = make_key(seq % n);
+            db.put(black_box(&key), black_box(VALUE_128B.as_slice()))
+                .unwrap();
+            seq += 1;
+        });
+        db.close().unwrap();
+    });
+
+    group.finish();
+}
+
+// ================================================================================================
+// Dataset scaling benchmarks
+// ================================================================================================
+
+/// Benchmark group for dataset-size scaling.
+///
+/// # Sub-benchmarks
+///
+/// ## `get/{1K,10K,50K,100K}`
+///
+/// **Scenario:** Prepopulates N keys into SSTables, reopens, and measures random
+/// point-read latency.
+///
+/// **What it measures:** How read latency scales as the dataset grows beyond OS page
+/// cache. With more SSTables, the engine must probe more bloom filters and potentially
+/// read more index blocks.
+///
+/// **Expected behaviour:** Gradual increase. For small datasets (1K–10K) everything
+/// fits in page cache; at 50K–100K, the number of SSTables grows and bloom filter
+/// probes accumulate. Per-read latency should grow sub-linearly (O(log N) with
+/// compaction).
+fn bench_dataset_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dataset_scaling");
+    group.sample_size(10);
+
+    for &count in &[1_000u64, 10_000, 50_000, 100_000] {
+        let label = match count {
+            1_000 => "1K",
+            10_000 => "10K",
+            50_000 => "50K",
+            100_000 => "100K",
+            _ => unreachable!(),
+        };
+
+        group.bench_function(BenchmarkId::new("get", label), |b| {
+            let dir = TempDir::new().unwrap();
+            prepopulate(dir.path(), count, VALUE_128B);
+            let db = Db::open(dir.path(), DbConfig::default()).unwrap();
+            let mut i = 0u64;
+            b.iter(|| {
+                let key = make_key(i % count);
+                let _ = black_box(db.get(black_box(&key)).unwrap());
+                i += 1;
+            });
+            db.close().unwrap();
+        });
+    }
+
+    group.finish();
+}
+
+// ================================================================================================
+// Scan-with-tombstones benchmark
+// ================================================================================================
+
+/// Benchmark group for scan performance in the presence of tombstones.
+///
+/// # Sub-benchmarks
+///
+/// ## `dense_tombstones/{0%,25%,50%,75%}`
+///
+/// **Scenario:** Prepopulates 5,000 keys, then deletes a percentage of them (evenly
+/// spaced), flushes to SSTables, and scans 100 keys.
+///
+/// **What it measures:** How tombstones (deletion markers) affect scan throughput.
+/// During a scan, the engine must read and skip tombstoned entries. Without tombstone
+/// compaction, deleted keys still occupy space in SSTables and slow down iteration.
+///
+/// **Expected behaviour:** Scan latency increases with tombstone density because the
+/// iterator must process more entries to yield the same number of live results.
+/// At 75% tombstones, the scan may need to read ~4× as many entries.
+fn bench_tombstone_scan(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tombstone_scan");
+    group.sample_size(10);
+
+    let n = 5_000u64;
+    let scan_size = 100u64;
+
+    for &pct in &[0u32, 25, 50, 75] {
+        group.throughput(Throughput::Elements(scan_size));
+        group.bench_function(
+            BenchmarkId::new("dense_tombstones", format!("{pct}%")),
+            |b| {
+                let dir = TempDir::new().unwrap();
+                // Insert all keys.
+                let db = open_small_buffer(dir.path());
+                for i in 0..n {
+                    db.put(&make_key(i), VALUE_128B).unwrap();
+                }
+                // Delete a percentage of keys.
+                let delete_every = if pct == 0 { 0 } else { 100 / pct };
+                if delete_every > 0 {
+                    for i in 0..n {
+                        if i % delete_every as u64 == 0 {
+                            db.delete(&make_key(i)).unwrap();
+                        }
+                    }
+                }
+                db.close().unwrap();
+                // Reopen — everything in SSTables, no compaction run.
+                let db = Db::open(dir.path(), DbConfig::default()).unwrap();
+
+                let mut offset = 0u64;
+                b.iter(|| {
+                    let start = make_key(offset % (n - scan_size));
+                    let end = make_key(offset % (n - scan_size) + scan_size);
+                    let results = db.scan(black_box(&start), black_box(&end)).unwrap();
+                    black_box(&results);
+                    offset += 1;
+                });
+                db.close().unwrap();
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ================================================================================================
+// Close (shutdown) benchmark
+// ================================================================================================
+
+/// Benchmark group for graceful shutdown (`close`) latency.
+///
+/// # Sub-benchmarks
+///
+/// ## `empty` and `with_frozen/{1000,5000}`
+///
+/// **Scenario:** Opens a database, optionally writes N keys (some may be in frozen
+/// memtables awaiting flush), then measures `close()` latency in isolation.
+///
+/// **What it measures:** Shutdown cost — flushing remaining frozen memtables,
+/// checkpointing the manifest, and draining the background thread pool. This matters
+/// for services doing rolling restarts or graceful termination.
+///
+/// **Expected behaviour:** `empty` close is near-instant (< 1 ms). `with_frozen`
+/// scales with the amount of unflushed data. The 5,000-key case should take noticeably
+/// longer because more data must be flushed before shutdown completes.
+fn bench_close(c: &mut Criterion) {
+    let mut group = c.benchmark_group("close");
+    group.sample_size(10);
+
+    // --- close an empty database ---
+    group.bench_function("empty", |b| {
+        b.iter_batched(
+            || {
+                let dir = TempDir::new().unwrap();
+                let db = open_memtable_only(dir.path());
+                (dir, db)
+            },
+            |(_dir, db)| {
+                db.close().unwrap();
+            },
+            BatchSize::PerIteration,
+        );
+    });
+
+    // --- close with pending data ---
+    for &count in &[1_000u64, 5_000] {
+        group.bench_function(BenchmarkId::new("with_data", count), |b| {
+            b.iter_batched(
+                || {
+                    let dir = TempDir::new().unwrap();
+                    let db = Db::open(
+                        dir.path(),
+                        DbConfig {
+                            write_buffer_size: 64 * 1024 * 1024,
+                            thread_pool_size: 2,
+                            ..DbConfig::default()
+                        },
+                    )
+                    .unwrap();
+                    for i in 0..count {
+                        db.put(&make_key(i), VALUE_128B).unwrap();
+                    }
+                    (dir, db)
+                },
+                |(_dir, db)| {
+                    db.close().unwrap();
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+// ================================================================================================
+// Key-size scaling benchmarks
+// ================================================================================================
+
+/// Benchmark group for key-size scaling analysis.
+///
+/// # Sub-benchmarks
+///
+/// ## `put/{16B,64B,256B,512B}`
+///
+/// **Scenario:** Writes a single entry with a key of the specified size and a fixed
+/// 128 B value into a memtable-only database.
+///
+/// **What it measures:** How key size affects write latency. Larger keys increase WAL
+/// record size, skip-list comparison cost, and bloom filter hashing time.
+///
+/// **Expected behaviour:** Modest increase with key size. The WAL fsync still dominates,
+/// so the difference between 16 B and 512 B keys should be small in absolute terms.
+///
+/// ## `get/{16B,64B,256B,512B}`
+///
+/// **Scenario:** Prepopulates 5,000 keys of the specified size into SSTables and
+/// measures random point-read latency.
+///
+/// **What it measures:** How key size affects read latency. Larger keys increase bloom
+/// filter hash cost, index binary-search comparison cost, and data-block scanning.
+///
+/// **Expected behaviour:** Gradual increase. Bloom filter evaluation and binary search
+/// comparisons scale with key length.
+fn bench_key_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("key_size");
+
+    let sizes: &[(&str, usize)] = &[("16B", 16), ("64B", 64), ("256B", 256), ("512B", 512)];
+
+    let make_sized_key = |size: usize, i: u64| -> Vec<u8> {
+        let suffix = format!("{i:012}");
+        let mut key = vec![b'K'; size];
+        let sb = suffix.as_bytes();
+        let start = size.saturating_sub(sb.len());
+        let copy_len = key.len() - start;
+        key[start..].copy_from_slice(&sb[..copy_len]);
+        key
+    };
+
+    // --- writes with varying key sizes ---
+    for &(label, size) in sizes {
+        group.bench_function(BenchmarkId::new("put", label), |b| {
+            let dir = TempDir::new().unwrap();
+            let db = open_memtable_only(dir.path());
+            let mut seq = 0u64;
+            b.iter(|| {
+                let key = make_sized_key(size, seq);
+                db.put(black_box(&key), black_box(VALUE_128B.as_slice()))
+                    .unwrap();
+                seq += 1;
+            });
+            db.close().unwrap();
+        });
+    }
+
+    // --- reads with varying key sizes ---
+    for &(label, size) in sizes {
+        group.bench_function(BenchmarkId::new("get", label), |b| {
+            let dir = TempDir::new().unwrap();
+            let n = 5_000u64;
+            {
+                let db = open_small_buffer(dir.path());
+                for i in 0..n {
+                    db.put(&make_sized_key(size, i), VALUE_128B).unwrap();
+                }
+                db.close().unwrap();
+            }
+            let db = Db::open(dir.path(), DbConfig::default()).unwrap();
+            let mut i = 0u64;
+            b.iter(|| {
+                let key = make_sized_key(size, i % n);
+                let _ = black_box(db.get(black_box(&key)).unwrap());
+                i += 1;
+            });
+            db.close().unwrap();
+        });
+    }
+
+    group.finish();
+}
+
+// ================================================================================================
 // Group registration
 // ================================================================================================
 
@@ -564,6 +1045,12 @@ criterion_group!(
     bench_compaction,
     bench_recovery,
     bench_value_sizes,
+    bench_concurrent,
+    bench_overwrite,
+    bench_dataset_scaling,
+    bench_tombstone_scan,
+    bench_close,
+    bench_key_sizes,
 );
 
 criterion_main!(benches);

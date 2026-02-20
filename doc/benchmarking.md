@@ -57,6 +57,16 @@ HTML reports are generated at `target/criterion/report/index.html`.
 | **recovery** | `open_existing/1000` | Reopen DB with 1 K keys |
 | | `open_existing/10000` | Reopen DB with 10 K keys |
 | **value_size** | `put/{64B,256B,1K,4K}` | Write throughput vs. value size |
+| **concurrent** | `readers/{1,2,4}` | Multi-threaded read scaling |
+| | `read_under_write/{1,2}_writer` | Read latency under concurrent write pressure |
+| **overwrite** | `update_memtable` | Overwrite existing keys in memtable |
+| | `update_sstable` | Overwrite keys that exist in SSTables |
+| **dataset_scaling** | `get/{1K,10K,50K,100K}` | Point-read latency vs. dataset size |
+| **tombstone_scan** | `dense_tombstones/{0%,25%,50%,75%}` | Scan throughput with varying tombstone density |
+| **close** | `empty` | Shutdown latency (empty DB) |
+| | `with_data/{1000,5000}` | Shutdown latency with pending data |
+| **key_size** | `put/{16B,64B,256B,512B}` | Write latency vs. key size |
+| | `get/{16B,64B,256B,512B}` | Read latency vs. key size |
 
 ### YCSB workloads (`benches/ycsb.rs`)
 
