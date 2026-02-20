@@ -236,14 +236,14 @@ pub fn full_range_scan_iters<'a>(
         .iter()
         .map(|s| &s.properties.min_key)
         .min()
-        .unwrap()
+        .ok_or_else(|| SSTableError::Internal("empty sstables in full_range_scan".into()))?
         .clone();
 
     let mut max_key = sstables
         .iter()
         .map(|s| &s.properties.max_key)
         .max()
-        .unwrap()
+        .ok_or_else(|| SSTableError::Internal("empty sstables in full_range_scan".into()))?
         .clone();
     // Extend max_key past the actual max key to make it exclusive.
     max_key.push(0xFF);
@@ -307,7 +307,9 @@ pub(crate) fn finalize_compaction(
 
         for id in &removed_ids {
             let path = format!("{}/{}/sstable-{}.sst", data_dir, SSTABLE_DIR, id);
-            let _ = fs::remove_file(&path);
+            if let Err(e) = fs::remove_file(&path) {
+                tracing::warn!(id, %e, "failed to remove old SSTable file during compaction");
+            }
         }
 
         return Ok(CompactionResult {
@@ -351,7 +353,9 @@ pub(crate) fn finalize_compaction(
     // Delete old SSTable files.
     for id in &removed_ids {
         let path = format!("{}/{}/sstable-{}.sst", data_dir, SSTABLE_DIR, id);
-        let _ = fs::remove_file(&path);
+        if let Err(e) = fs::remove_file(&path) {
+            tracing::warn!(id, %e, "failed to remove old SSTable file during compaction");
+        }
     }
 
     Ok(CompactionResult {

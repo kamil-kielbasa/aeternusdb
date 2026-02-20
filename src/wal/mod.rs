@@ -352,7 +352,8 @@ impl<T: WalData> Wal<T> {
         trace!("Appending record: {:?}", record,);
 
         let record_bytes = encoding::encode_to_vec(record)?;
-        let record_len = record_bytes.len() as u32;
+        let record_len = u32::try_from(record_bytes.len())
+            .map_err(|_| WalError::RecordTooLarge(record_bytes.len()))?;
 
         if record_len > self.header.max_record_size {
             return Err(WalError::RecordTooLarge(record_len as usize));

@@ -137,7 +137,7 @@ impl BlockIterator {
                     self.cursor = pos + key_len + value_len;
                 }
                 Err(e) => {
-                    eprintln!("decode error at cursor {}: {:?}", self.cursor, e);
+                    tracing::error!(cursor = self.cursor, ?e, "decode error during seek");
                     self.cursor = self.data.len();
                     return;
                 }
@@ -326,19 +326,19 @@ impl<'a> ScanIterator<'a> {
                         lsn: item.lsn,
                         timestamp: item.timestamp,
                     });
-                } else {
-                    return Some(Record::Put {
-                        key: item.key,
-                        value: item.value,
-                        lsn: item.lsn,
-                        timestamp: item.timestamp,
-                    });
                 }
+
+                return Some(Record::Put {
+                    key: item.key,
+                    value: item.value,
+                    lsn: item.lsn,
+                    timestamp: item.timestamp,
+                });
             }
 
             // end of block - load next
             match self.load_next_block() {
-                Ok(true) => continue,
+                Ok(true) => {}
                 Ok(false) | Err(_) => return None,
             }
         }

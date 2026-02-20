@@ -78,11 +78,10 @@ mod tests;
 // Re-exports — public API surface
 // ------------------------------------------------------------------------------------------------
 
-#[allow(unused_imports)] // re-exported for downstream consumers / tests
+#[allow(unused_imports)] // public API surface for downstream consumers
 pub use crate::engine::{PointEntry, RangeTombstone, Record};
-#[allow(unused_imports)] // re-exported for downstream consumers / tests
 pub use builder::SstWriter;
-#[allow(unused_imports)] // re-exported for downstream consumers / tests
+#[allow(unused_imports)] // public API surface for downstream consumers
 pub use iterator::{BlockEntry, BlockIterator, ScanIterator};
 
 // ------------------------------------------------------------------------------------------------
@@ -1083,8 +1082,10 @@ impl SSTable {
         mmap: &Mmap,
         handle: &BlockHandle,
     ) -> Result<Vec<u8>, SSTableError> {
-        let start = handle.offset as usize;
-        let size = handle.size as usize;
+        let start = usize::try_from(handle.offset)
+            .map_err(|_| SSTableError::Internal("block offset exceeds addressable range".into()))?;
+        let size = usize::try_from(handle.size)
+            .map_err(|_| SSTableError::Internal("block size exceeds addressable range".into()))?;
 
         if start + size > mmap.len() {
             return Err(SSTableError::Internal("Block out of range".into()));

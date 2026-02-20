@@ -314,8 +314,8 @@ fn can_drop_point_tombstone(
             // Resolve the false positive via actual get().
             let result = sst.get(key)?;
             match result {
-                GetResult::NotFound => continue, // false positive → safe
-                _ => return Ok(false),           // actually present → keep tombstone
+                GetResult::NotFound => {} // false positive → safe
+                _ => return Ok(false),    // actually present → keep tombstone
             }
         } else {
             // Without fallback scan, we must conservatively keep the tombstone.

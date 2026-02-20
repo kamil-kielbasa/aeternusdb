@@ -659,7 +659,10 @@ impl Engine {
         // Take the oldest frozen memtable (last in the newest-first vec).
         // We flush oldest first so that `insert(0, sstable)` keeps the
         // sstables list in newest-first order after a batch flush.
-        let frozen = inner.frozen.pop().unwrap();
+        let frozen = inner
+            .frozen
+            .pop()
+            .ok_or_else(|| EngineError::Internal("frozen list became empty unexpectedly".into()))?;
         let frozen_wal_id = frozen.memtable.wal.header.wal_seq;
 
         // Get all records from the frozen memtable
@@ -939,12 +942,11 @@ where
                         lsn,
                         timestamp,
                     });
-                    continue; // Range tombstone itself is not returned
+                    // Range tombstone itself is not returned
                 }
 
                 Record::Delete { key, .. } => {
                     self.current_key = Some(key.clone());
-                    continue;
                 }
 
                 Record::Put {

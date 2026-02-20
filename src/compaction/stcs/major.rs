@@ -103,7 +103,6 @@ fn execute(
             Record::RangeDelete { .. } => {
                 // In major compaction, range tombstones are dropped entirely.
                 // Their effect was applied when we suppressed covered Puts below.
-                continue;
             }
             Record::Delete { key, lsn, .. } => {
                 // Dedup: skip older versions.
@@ -115,7 +114,6 @@ fn execute(
                 // Put (if any) was already suppressed or isn't present in any
                 // SSTable.
                 trace!(key = ?key, lsn, "major: dropping point tombstone");
-                continue;
             }
             Record::Put {
                 key,

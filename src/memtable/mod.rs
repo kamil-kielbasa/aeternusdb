@@ -479,7 +479,10 @@ impl Memtable {
             timestamp,
         };
 
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self.inner.write().map_err(|_| {
+            error!("Read-write lock poisoned during delete_range");
+            MemtableError::Internal("Read-write lock poisoned".into())
+        })?;
 
         if guard.approximate_size + record_size > guard.write_buffer_size {
             return Err(MemtableError::FlushRequired);
@@ -571,12 +574,9 @@ impl Memtable {
                 if point.is_delete {
                     Ok(MemtableGetResult::Delete)
                 } else {
-                    Ok(MemtableGetResult::Put(
-                        point
-                            .value
-                            .clone()
-                            .expect("Non-delete point entry must have a value"),
-                    ))
+                    Ok(MemtableGetResult::Put(point.value.clone().ok_or_else(
+                        || MemtableError::Internal("non-delete point entry has no value".into()),
+                    )?))
                 }
             }
 
@@ -587,12 +587,9 @@ impl Memtable {
                 } else if point.is_delete {
                     Ok(MemtableGetResult::Delete)
                 } else {
-                    Ok(MemtableGetResult::Put(
-                        point
-                            .value
-                            .clone()
-                            .expect("Non-delete point entry must have a value"),
-                    ))
+                    Ok(MemtableGetResult::Put(point.value.clone().ok_or_else(
+                        || MemtableError::Internal("non-delete point entry has no value".into()),
+                    )?))
                 }
             }
         }
@@ -642,7 +639,9 @@ impl Memtable {
                 } else {
                     Record::Put {
                         key: key.clone(),
-                        value: entry.value.clone().unwrap(),
+                        value: entry.value.clone().ok_or_else(|| {
+                            MemtableError::Internal("non-delete point entry has no value".into())
+                        })?,
                         lsn: entry.lsn,
                         timestamp: entry.timestamp,
                     }
@@ -717,7 +716,9 @@ impl Memtable {
                 } else {
                     Record::Put {
                         key: key.clone(),
-                        value: entry.value.clone().unwrap(),
+                        value: entry.value.clone().ok_or_else(|| {
+                            MemtableError::Internal("non-delete point entry has no value".into())
+                        })?,
                         lsn: entry.lsn,
                         timestamp: entry.timestamp,
                     }
@@ -774,7 +775,7 @@ impl Memtable {
     fn current_timestamp() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system clock before UNIX epoch")
+            .unwrap_or_default()
             .as_nanos() as u64
     }
 }

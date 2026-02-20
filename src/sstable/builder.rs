@@ -101,7 +101,7 @@ impl BuildStats {
         SSTablePropertiesBlock {
             creation_timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("system clock before UNIX epoch")
+                .unwrap_or_default()
                 .as_nanos() as u64,
             record_count: self.record_count,
             tombstone_count: self.tombstone_count,

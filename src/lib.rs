@@ -349,7 +349,11 @@ impl Db {
                         task();
                     }
                 })
-                .expect("failed to spawn background thread");
+                .map_err(|e| {
+                    DbError::Engine(EngineError::Internal(format!(
+                        "failed to spawn background thread {id}: {e}"
+                    )))
+                })?;
             workers.push(handle);
         }
         // Workers hold their own receiver clones; drop ours.
