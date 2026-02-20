@@ -43,7 +43,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let wal_path = tmp.path().join("wal-000000.log");
+        let wal_path = tmp.path().join("000000.log");
 
         // Phase 1 — write range tombstones only.
         {
@@ -85,7 +85,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let wal_path = tmp.path().join("wal-000000.log");
+        let wal_path = tmp.path().join("000000.log");
 
         // Phase 1 — mixed writes.
         let expected: Vec<(&[u8], MemtableGetResult)>;
@@ -141,7 +141,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let wal_path = tmp.path().join("wal-000000.log");
+        let wal_path = tmp.path().join("000000.log");
 
         {
             let mt = Memtable::new(&wal_path, None, WRITE_BUFFER).unwrap();
@@ -182,7 +182,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let wal_path = tmp.path().join("wal-000000.log");
+        let wal_path = tmp.path().join("000000.log");
 
         {
             let mt = Memtable::new(&wal_path, None, WRITE_BUFFER).unwrap();
@@ -225,7 +225,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let wal_path = tmp.path().join("wal-000000.log");
+        let wal_path = tmp.path().join("000000.log");
 
         // Phase 1 — issue 5 operations (LSNs 0..4).
         {

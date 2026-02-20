@@ -306,7 +306,7 @@ pub(crate) fn finalize_compaction(
         manifest.checkpoint()?;
 
         for id in &removed_ids {
-            let path = format!("{}/{}/sstable-{}.sst", data_dir, SSTABLE_DIR, id);
+            let path = format!("{}/{}/{:06}.sst", data_dir, SSTABLE_DIR, id);
             if let Err(e) = fs::remove_file(&path) {
                 tracing::warn!(id, %e, "failed to remove old SSTable file during compaction");
             }
@@ -321,7 +321,7 @@ pub(crate) fn finalize_compaction(
 
     // Build new SSTable.
     let new_sst_id = manifest.allocate_sst_id()?;
-    let new_sst_path = format!("{}/{}/sstable-{}.sst", data_dir, SSTABLE_DIR, new_sst_id);
+    let new_sst_path = format!("{}/{}/{:06}.sst", data_dir, SSTABLE_DIR, new_sst_id);
 
     let point_count = point_entries.len();
     let range_count = range_tombstones.len();
@@ -352,7 +352,7 @@ pub(crate) fn finalize_compaction(
 
     // Delete old SSTable files.
     for id in &removed_ids {
-        let path = format!("{}/{}/sstable-{}.sst", data_dir, SSTABLE_DIR, id);
+        let path = format!("{}/{}/{:06}.sst", data_dir, SSTABLE_DIR, id);
         if let Err(e) = fs::remove_file(&path) {
             tracing::warn!(id, %e, "failed to remove old SSTable file during compaction");
         }

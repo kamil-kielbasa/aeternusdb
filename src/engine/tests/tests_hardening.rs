@@ -517,7 +517,7 @@ mod tests {
     // ================================================================
     // Orphan SSTable cleanup
     //
-    // open() scans the root path for `sst-*.sst` files not tracked
+    // open() scans the root path for `*.sst` files not tracked
     // by the manifest and removes them.
     // ================================================================
 
@@ -547,9 +547,9 @@ mod tests {
         engine.put(b"k".to_vec(), b"v".to_vec()).unwrap();
         engine.close().unwrap();
 
-        // Create an orphan file matching the cleanup pattern (sstable-*.sst)
+        // Create an orphan file matching the cleanup pattern (*.sst)
         // in the sstables/ subdirectory where the engine actually scans
-        let orphan_path = dir.path().join("sstables/sstable-999.sst");
+        let orphan_path = dir.path().join("sstables/000999.sst");
         std::fs::write(&orphan_path, b"orphan data").unwrap();
         assert!(
             orphan_path.exists(),
@@ -560,7 +560,7 @@ mod tests {
         let engine = Engine::open(dir.path(), default_config()).unwrap();
         assert!(
             !orphan_path.exists(),
-            "orphan sstable-*.sst file should be removed on open"
+            "orphan *.sst file should be removed on open"
         );
 
         // Original data should still work
@@ -568,11 +568,11 @@ mod tests {
     }
 
     /// # Scenario
-    /// Files that do NOT match the orphan pattern (`sstable-*.sst`) are preserved.
+    /// Files that do NOT match the orphan pattern (`*.sst`) are preserved.
     ///
     /// # Starting environment
     /// Engine opened and closed. A file named `notes.sst` (does not have
-    /// the `sstable-` prefix) is created in the sstables directory.
+    /// the numeric ID) is created in the sstables directory.
     ///
     /// # Actions
     /// 1. Reopen the engine.
@@ -580,7 +580,7 @@ mod tests {
     ///
     /// # Expected behavior
     /// `notes.sst` is preserved — the orphan cleanup only targets files
-    /// matching the `sstable-*.sst` naming pattern.
+    /// matching the `*.sst` naming pattern.
     #[test]
     fn memtable_sstable__non_orphan_sst_preserved() {
         let dir = TempDir::new().unwrap();
@@ -589,7 +589,7 @@ mod tests {
         engine.put(b"k".to_vec(), b"v".to_vec()).unwrap();
         engine.close().unwrap();
 
-        // File that does NOT match pattern (no "sstable-" prefix)
+        // File that does NOT match pattern (no numeric-only .sst)
         let safe_path = dir.path().join("sstables/notes.sst");
         std::fs::write(&safe_path, b"not an orphan").unwrap();
 

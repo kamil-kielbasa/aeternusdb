@@ -317,17 +317,12 @@ impl<T: WalData> Wal<T> {
         })
     }
 
-    /// Parse `wal_seq` from filename if it matches `wal-<seq>.log`.
+    /// Parse `wal_seq` from filename if it matches `<seq>.log`.
     fn parse_seq_from_path(path: &Path) -> Option<u64> {
         let name = path.file_name().and_then(OsStr::to_str)?;
-        // Expect pattern wal-000001.log or wal-1.log etc.
-        if let Some(seq_str) = name
-            .strip_prefix("wal-")
-            .and_then(|s| s.strip_suffix(".log"))
-        {
-            return seq_str.parse::<u64>().ok();
-        }
-        None
+        // Expect pattern 000001.log or 1.log etc.
+        let seq_str = name.strip_suffix(".log")?;
+        seq_str.parse::<u64>().ok()
     }
 
     /// Appends a single record to the WAL.
@@ -428,7 +423,7 @@ impl<T: WalData> Wal<T> {
 
         let cur_path = PathBuf::from(&self.path);
         let dir = cur_path.parent().unwrap_or_else(|| Path::new("."));
-        let next_path = dir.join(format!("wal-{next_seq:06}.log"));
+        let next_path = dir.join(format!("{next_seq:06}.log"));
 
         let new_wal = Wal::<T>::open(&next_path, Some(self.header.max_record_size))?;
         *self = new_wal;

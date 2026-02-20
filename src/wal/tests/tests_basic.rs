@@ -43,7 +43,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let insert = vec![MemTableRecord {
@@ -84,7 +84,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let insert = vec![
@@ -136,7 +136,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let mut wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let insert = vec![
@@ -197,7 +197,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let mut wal = Wal::open(path.to_str().unwrap(), None).unwrap();
 
         let batch1 = vec![

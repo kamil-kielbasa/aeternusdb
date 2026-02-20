@@ -209,7 +209,7 @@ mod tests {
 
         // Plant an orphan SSTable that the manifest does not know about.
         let sst_dir = path.join(SSTABLE_DIR);
-        let orphan_path = sst_dir.join("sstable-999999.sst");
+        let orphan_path = sst_dir.join("999999.sst");
         fs::write(&orphan_path, b"fake sst data").unwrap();
         assert_eq!(
             count_sst_files(path),

@@ -48,13 +48,13 @@ The checksum covers both the length prefix and the payload, protecting against b
 
 ## File Naming
 
-WAL files follow the pattern `wal-NNNNNN.log`, where `NNNNNN` is a zero-padded sequence number. The sequence number is parsed from the filename on open and stored in the header for validation.
+WAL files follow the pattern `NNNNNN.log`, where `NNNNNN` is a zero-padded sequence number. The sequence number is parsed from the filename on open and stored in the header for validation.
 
 Examples:
 ```
-memtables/wal-000001.log   # Active memtable WAL (seq 1)
-memtables/wal-000002.log   # Frozen memtable WAL (seq 2)
-manifest/wal-000001.log    # Manifest WAL
+memtables/000001.log   # Active memtable WAL (seq 1)
+memtables/000002.log   # Frozen memtable WAL (seq 2)
+manifest/000001.log    # Manifest WAL
 ```
 
 ## Guarantees

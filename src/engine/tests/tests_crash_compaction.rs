@@ -81,7 +81,7 @@ mod tests {
 
         // Phase 2: Plant orphan (simulating partial compaction output).
         let sst_dir = path.join(SSTABLE_DIR);
-        let orphan_path = sst_dir.join("sstable-777777.sst");
+        let orphan_path = sst_dir.join("777777.sst");
         {
             let mut f = File::create(&orphan_path).unwrap();
             f.write_all(b"partial compaction output").unwrap();
@@ -284,7 +284,7 @@ mod tests {
 
         // Plant .tmp debris.
         let sst_dir = path.join(SSTABLE_DIR);
-        let tmp_path = sst_dir.join("sstable-555555.tmp");
+        let tmp_path = sst_dir.join("555555.tmp");
         {
             let mut f = File::create(&tmp_path).unwrap();
             f.write_all(b"partial compaction sstable").unwrap();

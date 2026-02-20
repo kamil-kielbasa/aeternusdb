@@ -47,7 +47,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let _wal: Wal<MemTableRecord> = Wal::open(&path, None).unwrap();
 
         // Corrupt a single byte inside header bytes (not checksum).
@@ -89,7 +89,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let wal = Wal::open(&path, None).unwrap();
 
         let record = MemTableRecord {
@@ -137,7 +137,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let wal = Wal::open(&path, None).unwrap();
 
         let record = ManifestRecord {
@@ -184,7 +184,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let wal = Wal::open(&path, None).unwrap();
 
         let insert = vec![
@@ -252,7 +252,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let wal = Wal::open(&path, None).unwrap();
 
         let records = vec![

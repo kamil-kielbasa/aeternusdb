@@ -36,10 +36,10 @@ SSTable file itself and is loaded when the engine opens.
 
 Manifest metadata is persisted using a **WAL + periodic snapshot** design:
 
-1. **Manifest WAL** (`wal-000000.log`) — append-only log of `ManifestEvent` records.
+1. **Manifest WAL** (`000000.log`) — append-only log of `ManifestEvent` records.
    Every mutation is appended and fsynced before the in-memory state is updated.
 
-2. **Manifest snapshot** (`manifest.snapshot`) — encoded dump of the entire
+2. **Manifest snapshot** (`MANIFEST-000001`) — encoded dump of the entire
    `ManifestData` structure with a CRC32 checksum for corruption detection.
 
 3. **Recovery** — on startup the manifest loads the snapshot (if present), then
@@ -49,7 +49,7 @@ Manifest metadata is persisted using a **WAL + periodic snapshot** design:
 ┌───────────────────────────────────────────┐
 │              Manifest Recovery             │
 │                                            │
-│  1. Load manifest.snapshot (if valid)      │
+│  1. Load MANIFEST-000001 (if valid)      │
 │  2. Open manifest WAL                      │
 │  3. Replay WAL entries → apply to state    │
 │  4. In-memory ManifestData is consistent   │
@@ -126,9 +126,9 @@ Old SSTable files are deleted only after the manifest WAL entry is durable.
 1. Serialize ManifestData (with checksum = 0)
 2. Compute CRC32 over serialized bytes
 3. Build final ManifestSnapshot { version, snapshot_lsn, manifest_data, checksum }
-4. Write to manifest.snapshot.tmp
+4. Write to MANIFEST-000001.tmp
 5. fsync the temp file
-6. Atomic rename → manifest.snapshot
+6. Atomic rename → MANIFEST-000001
 7. fsync parent directory
 8. Truncate manifest WAL (reset to header-only)
 9. Mark in-memory data as clean (dirty = false)
@@ -155,9 +155,9 @@ The manifest is fully thread-safe and can be called from any engine thread.
 ```
 <db_dir>/
   manifest/
-    wal-000000.log       ← Manifest WAL (append-only event log)
-    manifest.snapshot     ← Latest checkpoint (custom encoding + CRC32)
-    manifest.snapshot.tmp ← Temporary file during checkpoint (deleted on success)
+    000000.log       ← Manifest WAL (append-only event log)
+    MANIFEST-000001     ← Latest checkpoint (custom encoding + CRC32)
+    MANIFEST-000001.tmp ← Temporary file during checkpoint (deleted on success)
 ```
 
 ---

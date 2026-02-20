@@ -46,7 +46,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         // Open with a very small max_record_size limit
         let wal: Wal<MemTableRecord> = Wal::open(&path, Some(32)).unwrap();
@@ -92,7 +92,7 @@ mod tests {
     /// No directory at `/tmp/.../nonexistent_dir/`.
     ///
     /// # Actions
-    /// 1. `Wal::open("/tmp/.../nonexistent_dir/wal-000000.log")`.
+    /// 1. `Wal::open("/tmp/.../nonexistent_dir/000000.log")`.
     ///
     /// # Expected behavior
     /// Returns `WalError::Io` (directory not found).
@@ -101,7 +101,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let bad_path = tmp.path().join("nonexistent_dir").join("wal-000000.log");
+        let bad_path = tmp.path().join("nonexistent_dir").join("000000.log");
 
         let result = Wal::<MemTableRecord>::open(&bad_path, None);
         assert!(result.is_err());
@@ -134,7 +134,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         let wal: Wal<MemTableRecord> = Wal::open(&path, None).unwrap();
 
@@ -170,7 +170,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         let wal: Arc<Wal<MemTableRecord>> = Arc::new(Wal::open(&path, None).unwrap());
 

@@ -47,7 +47,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
         memtable.put(b"key1".to_vec(), b"value1".to_vec()).unwrap();
@@ -84,7 +84,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
         memtable.put(b"key1".to_vec(), b"value1".to_vec()).unwrap();
@@ -128,7 +128,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
         // Insert various operations - at least 3 of each type
@@ -275,7 +275,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
         memtable.put(b"a".to_vec(), b"1".to_vec()).unwrap();
@@ -339,7 +339,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
         memtable.put(b"a".to_vec(), b"1".to_vec()).unwrap();
@@ -370,7 +370,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 16).unwrap();
 
         let res = memtable.put(b"a".to_vec(), b"1234567890".to_vec());
@@ -400,7 +400,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         {
             let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn recovery_from_wal_preserves_lsn() {
         let tmp_dir = TempDir::new().unwrap();
-        let wal_path = tmp_dir.path().join("wal-000001.log");
+        let wal_path = tmp_dir.path().join("000001.log");
 
         let memtable = Memtable::new(&wal_path, None, 1024 * 1024).unwrap();
         memtable.put(b"alpha".to_vec(), b"value1".to_vec()).unwrap();
@@ -492,7 +492,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(path.to_str().unwrap(), None, 1024).unwrap();
 
         assert_eq!(

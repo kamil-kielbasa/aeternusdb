@@ -72,7 +72,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - Orphan SSTable cleanup (unreferenced `.sst` files deleted, `.tmp` files removed).
 
 #### Testing
-- 421 tests total (372 unit + 27 integration + 22 integration hardening); 0 failures, 0 warnings.
+- 467 tests total (413 unit + 27 integration + 22 integration hardening + 5 doc-tests); 0 failures, 0 warnings.
 - 11 stress tests (marked `#[ignore]`) for concurrency, crash recovery, and compaction under load.
 
 **Priority 1 — Critical correctness (29 tests across 5 files)**
@@ -97,6 +97,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - `tests_scan_edge` (engine) — prefix-key scan boundaries in memtable and SSTable, exactly-one-match range, adjacent non-overlapping ranges, deleted key at scan start.
 - `tests_hardening` (memtable) — WAL replay with only range-deletes, interleaved point-delete and range-delete recovery, resurrect after range-delete survives replay, overlapping range tombstones, LSN counter resumption after replay.
 - `integration_hardening` — exact boundary values accepted/rejected for all six `DbConfig` fields (`write_buffer_size`, `min_compaction_threshold`, `max_compaction_threshold`, `tombstone_compaction_ratio`, `tombstone_compaction_interval`, `thread_pool_size`); `scan` with `start == end` returns empty; `delete_range` with empty keys rejected; `major_compact` on empty DB; reopen after deleting all keys.
+
+#### File Naming Convention
+- Standardised on-disk file naming with 6-digit zero-padded sequence numbers:
+  - WAL files: `wal-NNNNNN.log` → `NNNNNN.log` (e.g. `000001.log`)
+  - SSTable files: `sstable-N.sst` → `NNNNNN.sst` (e.g. `000001.sst`)
+  - Manifest snapshot: `manifest.snapshot` → `MANIFEST-000001`
 
 #### CI / CD
 - GitHub Actions CI workflow — `cargo check`, `rustfmt`, `clippy`, `cargo test`, `cargo doc -D warnings`, `cargo machete`.

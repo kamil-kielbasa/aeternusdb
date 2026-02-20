@@ -21,7 +21,7 @@
 //!    - adding/removing SSTables,
 //!    - updating LSN.
 //!
-//! 2. **Manifest snapshot** (`manifest.snapshot`) is a compact encoded
+//! 2. **Manifest snapshot** (`MANIFEST-000001`) is a compact encoded
 //!    dump of the whole metadata structure. Checksum ensures corruption detection.
 //!
 //! 3. On startup:
@@ -61,9 +61,10 @@ use thiserror::Error;
 use tracing::{error, info, warn};
 
 const SNAPSHOT_TMP_SUFFIX: &str = ".tmp";
-const SNAPSHOT_FILENAME: &str = "manifest.snapshot";
-const WAL_FILENAME: &str = "wal-000000.log";
-const U32_SIZE: usize = std::mem::size_of::<u32>();
+const SNAPSHOT_FILENAME: &str = "MANIFEST-000001";
+/// Manifest WAL filename. This is a fixed, single-segment WAL file — it does
+/// not rotate. Truncated to zero on each checkpoint.
+const WAL_FILENAME: &str = "000000.log";
 
 // ------------------------------------------------------------------------------------------------
 // Error Types
@@ -97,32 +98,34 @@ pub enum ManifestError {
 // Manifest data structures
 // ------------------------------------------------------------------------------------------------
 
-/// Immutable in-memory representation of the manifest durable state.
+/// In-memory representation of the manifest durable state.
 ///
 /// This structure stores the persistent metadata describing
-/// the layout of the LSM tree.
+/// the layout of the LSM tree. Fields are private to enforce
+/// invariants through the [`Manifest`] API.
 #[derive(Debug, PartialEq, Clone)]
-pub struct ManifestData {
+pub(crate) struct ManifestData {
     /// Monotonically increasing manifest version.
-    pub version: u64,
+    version: u64,
 
     /// Last globally assigned LSN (Log Sequence Number).
-    pub last_lsn: u64,
+    last_lsn: u64,
 
     /// Identifier of current active WAL segment.
-    pub active_wal: u64,
+    active_wal: u64,
 
     /// Identifiers of frozen WAL segments (older, ready for flush).
-    pub frozen_wals: Vec<u64>,
+    frozen_wals: Vec<u64>,
 
     /// List of all SSTables belonging to the LSM tree.
-    pub sstables: Vec<ManifestSstEntry>,
+    sstables: Vec<ManifestSstEntry>,
 
     /// Next SSTable ID to allocate. Monotonically increasing.
-    pub next_sst_id: u64,
+    next_sst_id: u64,
 
-    /// Indicates whether the current manifest differs from the recorded snapshot.   
-    pub dirty: bool,
+    /// Runtime-only flag: true when in-memory state diverges from
+    /// the last persisted snapshot. Not serialized.
+    dirty: bool,
 }
 
 /// Entry describing a single SSTable known to the manifest.
@@ -168,7 +171,9 @@ impl encoding::Encode for ManifestData {
         encoding::encode_vec(&self.frozen_wals, buf)?;
         encoding::encode_vec(&self.sstables, buf)?;
         encoding::Encode::encode_to(&self.next_sst_id, buf)?;
-        encoding::Encode::encode_to(&self.dirty, buf)?;
+        // `dirty` is a runtime-only flag — always written as `false` for
+        // wire compatibility, but never read back.
+        encoding::Encode::encode_to(&false, buf)?;
         Ok(())
     }
 }
@@ -188,7 +193,9 @@ impl encoding::Decode for ManifestData {
         offset += n;
         let (next_sst_id, n) = u64::decode_from(&buf[offset..])?;
         offset += n;
-        let (dirty, n) = bool::decode_from(&buf[offset..])?;
+        // `dirty` is present in the wire format for backward compatibility
+        // but its value is discarded — always initialised to `false`.
+        let (_dirty, n) = bool::decode_from(&buf[offset..])?;
         offset += n;
         Ok((
             Self {
@@ -198,7 +205,7 @@ impl encoding::Decode for ManifestData {
                 frozen_wals,
                 sstables,
                 next_sst_id,
-                dirty,
+                dirty: false,
             },
             offset,
         ))
@@ -398,7 +405,7 @@ pub enum ManifestEvent {
     },
 }
 
-/// Serialized snapshot stored in `manifest.snapshot`.
+/// Serialized snapshot stored in `MANIFEST-000001`.
 ///
 /// Contains full manifest data and a checksum for corruption detection.
 #[derive(Debug)]
@@ -473,16 +480,19 @@ impl Manifest {
                 Ok((snap, slsn)) => {
                     data = snap;
                     snapshot_lsn = slsn;
-                    info!("Loaded manifest snapfrom from {:?}", snapshot_path);
+                    info!("Loaded manifest snapshot from {:?}", snapshot_path);
                 }
                 Err(e) => {
+                    // Resilient recovery: ignore corrupt snapshot and replay WAL
+                    // from scratch.  The WAL is the ground truth and snapshots
+                    // are an optimisation hint.
                     warn!(
-                        "Failed to read manifest snapshot {:?}: {}; falling back to WAL replay",
+                        "Failed to read manifest snapshot {:?}: {}; \
+                         falling back to full WAL replay",
                         snapshot_path, e
                     );
-                    // ignore snapshot and continue to replay WALs from start
-
-                    return Err(e);
+                    data = ManifestData::default();
+                    snapshot_lsn = 0;
                 }
             }
         }
@@ -504,56 +514,69 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// Returns the active WAL segment ID.
-    pub fn get_active_wal(&self) -> Result<u64, ManifestError> {
-        let data = self.data.lock().map_err(|_| {
+    // --------------------------------------------------------------------
+    // Internal helpers
+    // --------------------------------------------------------------------
+
+    /// Acquires the manifest data lock, mapping a poisoned mutex to
+    /// [`ManifestError::Internal`].
+    fn lock_data(&self) -> Result<std::sync::MutexGuard<'_, ManifestData>, ManifestError> {
+        self.data.lock().map_err(|_| {
             error!("Mutex poisoned");
             ManifestError::Internal("Mutex poisoned".into())
-        })?;
+        })
+    }
 
-        Ok(data.active_wal)
+    // --------------------------------------------------------------------
+    // Read accessors
+    // --------------------------------------------------------------------
+
+    /// Returns the active WAL segment ID.
+    pub fn get_active_wal(&self) -> Result<u64, ManifestError> {
+        Ok(self.lock_data()?.active_wal)
     }
 
     /// Returns the frozen WAL segment list.
     pub fn get_frozen_wals(&self) -> Result<Vec<u64>, ManifestError> {
-        let data = self.data.lock().map_err(|_| {
-            error!("Mutex poisoned");
-            ManifestError::Internal("Mutex poisoned".into())
-        })?;
-
-        Ok(data.frozen_wals.clone())
+        Ok(self.lock_data()?.frozen_wals.clone())
     }
 
     /// Returns list of SSTable entries.
     pub fn get_sstables(&self) -> Result<Vec<ManifestSstEntry>, ManifestError> {
-        let data = self.data.lock().map_err(|_| {
-            error!("Mutex poisoned");
-            ManifestError::Internal("Mutex poisoned".into())
-        })?;
-
-        Ok(data.sstables.clone())
+        Ok(self.lock_data()?.sstables.clone())
     }
 
     /// Returns the last persistent LSN.
     pub fn get_last_lsn(&self) -> Result<u64, ManifestError> {
-        let data = self.data.lock().map_err(|_| {
-            error!("Mutex poisoned");
-            ManifestError::Internal("Mutex poisoned".into())
-        })?;
-
-        Ok(data.last_lsn)
+        Ok(self.lock_data()?.last_lsn)
     }
 
+    /// Returns `true` if in-memory state has diverged from the last snapshot.
+    pub fn is_dirty(&self) -> Result<bool, ManifestError> {
+        Ok(self.lock_data()?.dirty)
+    }
+
+    // --------------------------------------------------------------------
+    // Mutation methods
+    // --------------------------------------------------------------------
+    //
+    // All mutation methods take `&self` rather than `&mut self`.
+    // Interior mutability is provided by the `Mutex<ManifestData>` and the
+    // internally-synchronised WAL.  This allows concurrent metadata updates
+    // without requiring exclusive ownership.  `checkpoint()` is the only
+    // method that requires `&mut self` because it truncates the WAL and
+    // must not race with concurrent mutations.
+
     /// Updates the active WAL segment.
-    pub fn set_active_wal(&mut self, wal_id: u64) -> Result<(), ManifestError> {
+    pub fn set_active_wal(&self, wal_id: u64) -> Result<(), ManifestError> {
         let rec = ManifestEvent::SetActiveWal { wal: wal_id };
-        self.wal.append(&rec)?; // durable via wal.append() which calls sync_all() in your WAL
+        self.wal.append(&rec)?;
         self.apply_record(&rec)?;
         Ok(())
     }
 
     /// Adds a WAL segment to frozen list.
-    pub fn add_frozen_wal(&mut self, wal_id: u64) -> Result<(), ManifestError> {
+    pub fn add_frozen_wal(&self, wal_id: u64) -> Result<(), ManifestError> {
         let rec = ManifestEvent::AddFrozenWal { wal: wal_id };
         self.wal.append(&rec)?;
         self.apply_record(&rec)?;
@@ -561,7 +584,7 @@ impl Manifest {
     }
 
     /// Removes a frozen WAL.
-    pub fn remove_frozen_wal(&mut self, wal_id: u64) -> Result<(), ManifestError> {
+    pub fn remove_frozen_wal(&self, wal_id: u64) -> Result<(), ManifestError> {
         let rec = ManifestEvent::RemoveFrozenWal { wal: wal_id };
         self.wal.append(&rec)?;
         self.apply_record(&rec)?;
@@ -569,7 +592,7 @@ impl Manifest {
     }
 
     /// Adds an SSTable entry to manifest.
-    pub fn add_sstable(&mut self, entry: ManifestSstEntry) -> Result<(), ManifestError> {
+    pub fn add_sstable(&self, entry: ManifestSstEntry) -> Result<(), ManifestError> {
         let rec = ManifestEvent::AddSst {
             entry: entry.clone(),
         };
@@ -579,7 +602,7 @@ impl Manifest {
     }
 
     /// Removes SSTable entry by ID.
-    pub fn remove_sstable(&mut self, sst_id: u64) -> Result<(), ManifestError> {
+    pub fn remove_sstable(&self, sst_id: u64) -> Result<(), ManifestError> {
         let rec = ManifestEvent::RemoveSst { id: sst_id };
         self.wal.append(&rec)?;
         self.apply_record(&rec)?;
@@ -590,33 +613,28 @@ impl Manifest {
     ///
     /// Increments the manifest's `next_sst_id` counter and persists the
     /// new value to the WAL. Returns the allocated ID.
-    pub fn allocate_sst_id(&mut self) -> Result<u64, ManifestError> {
-        let id = {
-            let data = self
-                .data
-                .lock()
-                .map_err(|_| ManifestError::Internal("Mutex poisoned".into()))?;
-            data.next_sst_id
-        };
+    ///
+    /// The data lock is held across the read-and-increment to prevent
+    /// two concurrent callers from allocating the same ID.
+    pub fn allocate_sst_id(&self) -> Result<u64, ManifestError> {
+        let mut data = self.lock_data()?;
+        let id = data.next_sst_id;
         let rec = ManifestEvent::AllocateSstId { id };
         self.wal.append(&rec)?;
-        self.apply_record(&rec)?;
+        data.next_sst_id = id + 1;
+        data.dirty = true;
         Ok(id)
     }
 
     /// Returns the next SSTable ID without allocating it.
     pub fn peek_next_sst_id(&self) -> Result<u64, ManifestError> {
-        let data = self
-            .data
-            .lock()
-            .map_err(|_| ManifestError::Internal("Mutex poisoned".into()))?;
-        Ok(data.next_sst_id)
+        Ok(self.lock_data()?.next_sst_id)
     }
 
     /// Atomically records a compaction: adds new SSTables and removes old ones
     /// in a single WAL entry.
     pub fn apply_compaction(
-        &mut self,
+        &self,
         added: Vec<ManifestSstEntry>,
         removed: Vec<u64>,
     ) -> Result<(), ManifestError> {
@@ -627,7 +645,7 @@ impl Manifest {
     }
 
     /// Updates last durable LSN.
-    pub fn update_lsn(&mut self, last_lsn: u64) -> Result<(), ManifestError> {
+    pub fn update_lsn(&self, last_lsn: u64) -> Result<(), ManifestError> {
         let rec = ManifestEvent::UpdateLsn { last_lsn };
         self.wal.append(&rec)?;
         self.apply_record(&rec)?;
@@ -637,20 +655,17 @@ impl Manifest {
     /// Creates a manifest snapshot.
     ///
     /// # Behavior
-    /// - Serializes ManifestData and writes it to `manifest.snapshot`.
+    /// - Serializes ManifestData and writes it to `MANIFEST-000001`.
     /// - Computes a checksum for corruption detection.
     /// - Resets/truncates manifest WAL to reduce recovery cost.
     ///
-    /// # Safety
-    /// Safe to call during concurrent metadata mutations.
+    /// # Exclusive access
+    /// Requires `&mut self` to ensure no concurrent mutations race with the
+    /// WAL truncation step.
     pub fn checkpoint(&mut self) -> Result<(), ManifestError> {
-        // 1. Build snapshot structure (capture current state)
-        let snapshot_no_csum = {
-            let data = self
-                .data
-                .lock()
-                .map_err(|e| ManifestError::Internal(format!("Mutex poisoned: {}", e)))?
-                .clone();
+        // 1. Build snapshot structure (capture current state, checksum placeholder)
+        let snapshot = {
+            let data = self.lock_data()?.clone();
 
             ManifestSnapshot {
                 version: data.version,
@@ -660,24 +675,18 @@ impl Manifest {
             }
         };
 
-        // 2. Serialize snapshot_no_csum and compute checksum over it
-        let without_csum_bytes = encoding::encode_to_vec(&snapshot_no_csum)?;
+        // 2. Single-pass: serialize with checksum=0, compute CRC, then patch
+        //    the trailing 4 bytes with the real checksum (little-endian u32).
+        let mut snapshot_bytes = encoding::encode_to_vec(&snapshot)?;
 
         let mut hasher = Crc32::new();
-        hasher.update(&without_csum_bytes);
+        hasher.update(&snapshot_bytes);
         let checksum = hasher.finalize();
 
-        // 3. Build final snapshot object (with checksum) and serialize
-        let final_snapshot = ManifestSnapshot {
-            version: snapshot_no_csum.version,
-            snapshot_lsn: snapshot_no_csum.snapshot_lsn,
-            manifest_data: snapshot_no_csum.manifest_data.clone(),
-            checksum,
-        };
+        let len = snapshot_bytes.len();
+        snapshot_bytes[len - 4..].copy_from_slice(&checksum.to_le_bytes());
 
-        let final_bytes = encoding::encode_to_vec(&final_snapshot)?;
-
-        // 4. Write to temp file
+        // 3. Write to temp file
         let tmp_name = format!("{}{}", SNAPSHOT_FILENAME, SNAPSHOT_TMP_SUFFIX);
         let tmp_path = self.path.join(&tmp_name);
         {
@@ -686,30 +695,24 @@ impl Manifest {
                 .write(true)
                 .truncate(true)
                 .open(&tmp_path)?;
-            f.write_all(&final_bytes)?;
+            f.write_all(&snapshot_bytes)?;
             f.sync_all()?; // ensure snapshot content durable
         }
 
-        // 5. Atomic rename
+        // 4. Atomic rename
         let final_path = self.path.join(SNAPSHOT_FILENAME);
         fs::rename(&tmp_path, &final_path)?;
 
-        // 6. fsync parent directory so rename is durable
+        // 5. fsync parent directory so rename is durable
         Self::fsync_dir(&self.path)?;
 
         info!("Manifest snapshot written to {:?}", final_path);
 
-        // 7. Truncate manifest WAL to header-only (safe after snapshot durability)
-        self.wal.truncate()?; // resets WAL
+        // 6. Truncate manifest WAL to header-only (safe after snapshot durability)
+        self.wal.truncate()?;
 
-        // 8. Mark in-memory data as clean
-        {
-            let mut data = self
-                .data
-                .lock()
-                .map_err(|e| ManifestError::Internal(format!("Mutex poisoned: {}", e)))?;
-            data.dirty = false;
-        }
+        // 7. Mark in-memory data as clean
+        self.lock_data()?.dirty = false;
 
         Ok(())
     }
@@ -726,25 +729,29 @@ impl Manifest {
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
 
-        let (mut snap, _) = encoding::decode_from_slice::<ManifestSnapshot>(buf.as_slice())?;
+        let (snap, _) = encoding::decode_from_slice::<ManifestSnapshot>(buf.as_slice())?;
 
-        let stored_checksum = snap.checksum;
-        snap.checksum = 0;
-
-        let snapshot_bytes = encoding::encode_to_vec(&snap)?;
+        // Verify checksum: re-encode with checksum=0, CRC the result, compare.
+        let verify = ManifestSnapshot {
+            checksum: 0,
+            version: snap.version,
+            snapshot_lsn: snap.snapshot_lsn,
+            manifest_data: snap.manifest_data.clone(),
+        };
+        let verify_bytes = encoding::encode_to_vec(&verify)?;
 
         let mut hasher = Crc32::new();
-        hasher.update(snapshot_bytes.as_slice());
+        hasher.update(&verify_bytes);
         let computed_checksum = hasher.finalize();
 
-        if stored_checksum != computed_checksum {
+        if snap.checksum != computed_checksum {
             return Err(ManifestError::SnapshotChecksumMismatch);
         }
 
         Ok((snap.manifest_data, snap.snapshot_lsn))
     }
 
-    fn replay_wal(&mut self, _snapshot_lsn: u64) -> Result<(), ManifestError> {
+    fn replay_wal(&mut self, snapshot_lsn: u64) -> Result<(), ManifestError> {
         let iter = match self.wal.replay_iter() {
             Ok(i) => i,
             Err(e) => {
@@ -752,31 +759,47 @@ impl Manifest {
             }
         };
 
+        let mut count: u64 = 0;
         for item in iter {
             match item {
                 Ok(rec) => {
                     self.apply_record(&rec)?;
+                    count += 1;
                 }
                 Err(e) => {
-                    // stop at first corruption / unexpected EOF as recommended earlier
                     warn!("Manifest WAL replay stopped due to WAL error: {}", e);
                     break;
                 }
             }
         }
 
+        // Defensive check: after replay the manifest LSN must be at least
+        // as large as the snapshot baseline.  A smaller value indicates WAL
+        // truncation or data loss.
+        let current_lsn = self.lock_data()?.last_lsn;
+        if snapshot_lsn > 0 && current_lsn < snapshot_lsn {
+            warn!(
+                "Manifest LSN after WAL replay ({}) is less than snapshot LSN ({}); \
+                 possible WAL truncation or data loss",
+                current_lsn, snapshot_lsn
+            );
+        }
+
+        info!(
+            "Manifest WAL replay: {} entries applied (snapshot_lsn={})",
+            count, snapshot_lsn
+        );
+
         Ok(())
     }
 
-    fn apply_record(&mut self, rec: &ManifestEvent) -> Result<(), ManifestError> {
-        let mut data = self.data.lock().map_err(|_| {
-            error!("Mutex poisoned");
-            ManifestError::Internal("Mutex poisoned".into())
-        })?;
+    fn apply_record(&self, rec: &ManifestEvent) -> Result<(), ManifestError> {
+        let mut data = self.lock_data()?;
 
         match rec {
             ManifestEvent::Version { version } => {
                 data.version = *version;
+                data.dirty = true;
             }
 
             ManifestEvent::SetActiveWal { wal } => {

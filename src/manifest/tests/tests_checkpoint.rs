@@ -46,8 +46,8 @@ mod tests {
     // ================================================================
 
     /// # Scenario
-    /// Simulate a crash that leaves `manifest.snapshot.tmp` on disk
-    /// but the rename to `manifest.snapshot` never happened.
+    /// Simulate a crash that leaves `MANIFEST-000001.tmp` on disk
+    /// but the rename to `MANIFEST-000001` never happened.
     ///
     /// # Starting environment
     /// Manifest with some mutations, no prior snapshot.
@@ -55,7 +55,7 @@ mod tests {
     /// # Actions
     /// 1. Open manifest, add SSTable, set active WAL.
     /// 2. Drop manifest.
-    /// 3. Write a bogus `manifest.snapshot.tmp` file.
+    /// 3. Write a bogus `MANIFEST-000001.tmp` file.
     /// 4. Reopen manifest — should recover from WAL.
     ///
     /// # Expected behavior
@@ -67,13 +67,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         {
-            let mut m = open_manifest(&temp);
+            let m = open_manifest(&temp);
             m.set_active_wal(5).unwrap();
             m.add_sstable(sst_entry(1)).unwrap();
         }
 
         // Simulate leftover .tmp from a crashed checkpoint.
-        let tmp_path = temp.path().join("manifest.snapshot.tmp");
+        let tmp_path = temp.path().join("MANIFEST-000001.tmp");
         fs::write(&tmp_path, b"corrupted partial snapshot data").unwrap();
 
         // Reopen — should succeed via WAL replay.
@@ -147,7 +147,7 @@ mod tests {
         }
 
         // Reopen after checkpoint.
-        let mut m2 = open_manifest(&temp);
+        let m2 = open_manifest(&temp);
         let id_c = m2.allocate_sst_id().unwrap();
         assert!(
             id_c > id_b,
@@ -177,7 +177,7 @@ mod tests {
         let last_id;
 
         {
-            let mut m = open_manifest(&temp);
+            let m = open_manifest(&temp);
 
             for _ in 0..10 {
                 m.allocate_sst_id().unwrap();
@@ -185,7 +185,7 @@ mod tests {
             last_id = m.peek_next_sst_id().unwrap() - 1;
         }
 
-        let mut m2 = open_manifest(&temp);
+        let m2 = open_manifest(&temp);
         let new_id = m2.allocate_sst_id().unwrap();
         assert!(
             new_id > last_id,
@@ -277,12 +277,13 @@ mod tests {
 
     /// # Scenario
     /// Create a valid snapshot, then corrupt its bytes. Reopening
-    /// should fail with `SnapshotChecksumMismatch`.
+    /// falls back to WAL replay (resilient recovery).
     ///
     /// # Expected behavior
-    /// `Manifest::open` returns an error.
+    /// `Manifest::open` succeeds; since WAL was truncated by checkpoint,
+    /// state reverts to defaults.
     #[test]
-    fn corrupt_snapshot_detected_on_reopen() {
+    fn corrupt_snapshot_falls_back_to_wal() {
         init_tracing();
 
         let temp = TempDir::new().unwrap();
@@ -295,21 +296,19 @@ mod tests {
         }
 
         // Corrupt the snapshot file (flip a byte near the middle).
-        let snap_path = temp.path().join("manifest.snapshot");
+        let snap_path = temp.path().join("MANIFEST-000001");
         let mut data = fs::read(&snap_path).unwrap();
         assert!(data.len() > 10, "Snapshot should be non-trivial");
 
         let mid = data.len() / 2;
-        data[mid] ^= 0xFF; // flip all bits in one byte
+        data[mid] ^= 0xFF;
         fs::write(&snap_path, &data).unwrap();
 
-        // Reopen must fail.
-        let res = Manifest::open(temp.path());
-        assert!(
-            res.is_err(),
-            "Opening with corrupt snapshot should fail, got {:?}",
-            res
-        );
+        // Resilient recovery: corrupt snapshot → WAL replay (empty after
+        // checkpoint truncation) → default state.
+        let m2 = Manifest::open(temp.path()).unwrap();
+        assert_eq!(m2.get_last_lsn().unwrap(), 0);
+        assert!(m2.get_sstables().unwrap().is_empty());
     }
 
     // ================================================================

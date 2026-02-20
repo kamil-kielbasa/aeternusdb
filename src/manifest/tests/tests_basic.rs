@@ -21,7 +21,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
+    use crate::manifest::{Manifest, ManifestSstEntry};
     use std::fs;
     use tempfile::TempDir;
     use tracing_subscriber::EnvFilter;
@@ -87,7 +87,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         {
-            let mut m = open_manifest(&temp);
+            let m = open_manifest(&temp);
             m.set_active_wal(42).unwrap();
         }
 
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn frozen_wal_list_works() {
         let temp = TempDir::new().unwrap();
-        let mut m = open_manifest(&temp);
+        let m = open_manifest(&temp);
 
         m.add_frozen_wal(1).unwrap();
         m.add_frozen_wal(2).unwrap();
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn sstables_persist() {
         let temp = TempDir::new().unwrap();
-        let mut m = open_manifest(&temp);
+        let m = open_manifest(&temp);
 
         let e1 = ManifestSstEntry {
             id: 10,
@@ -198,7 +198,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         {
-            let mut m = open_manifest(&temp);
+            let m = open_manifest(&temp);
             m.update_lsn(777).unwrap();
         }
 
@@ -233,8 +233,8 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
 
-        let wal_path = temp.path().join("wal-000000.log");
-        let snapshot_path = temp.path().join("manifest.snapshot");
+        let wal_path = temp.path().join("000000.log");
+        let snapshot_path = temp.path().join("MANIFEST-000001");
 
         {
             let mut m = open_manifest(&temp);
@@ -265,21 +265,22 @@ mod tests {
     // ----------------------------------------------------------------
 
     /// # Scenario
-    /// Corrupting a single byte in the snapshot file makes the manifest
-    /// refuse to open.
+    /// Corrupting a single byte in the snapshot file triggers resilient
+    /// recovery: the manifest falls back to WAL replay.
     ///
     /// # Starting environment
     /// Manifest with a valid checkpoint.
     ///
     /// # Actions
-    /// 1. Create checkpoint.
+    /// 1. Create checkpoint (WAL is truncated).
     /// 2. Flip one byte in the snapshot file.
-    /// 3. Attempt to reopen.
+    /// 3. Reopen.
     ///
     /// # Expected behavior
-    /// `Manifest::open` returns `ManifestError::SnapshotChecksumMismatch`.
+    /// `Manifest::open` succeeds (falls back to WAL replay).
+    /// Since the WAL was truncated, state reverts to defaults.
     #[test]
-    fn detects_corrupted_snapshot() {
+    fn recovers_from_corrupted_snapshot_via_wal() {
         let temp = TempDir::new().unwrap();
 
         {
@@ -288,7 +289,7 @@ mod tests {
             m.checkpoint().unwrap();
         }
 
-        let snapshot_path = temp.path().join("manifest.snapshot");
+        let snapshot_path = temp.path().join("MANIFEST-000001");
 
         {
             let mut bytes = fs::read(&snapshot_path).unwrap();
@@ -296,11 +297,13 @@ mod tests {
             fs::write(&snapshot_path, bytes).unwrap();
         }
 
-        let err = Manifest::open(temp.path()).unwrap_err();
-        match err {
-            ManifestError::SnapshotChecksumMismatch => {}
-            other => panic!("Snapshot checksum mismatch, got {:?}", other),
-        }
+        // Resilient recovery: corrupt snapshot is ignored, WAL (truncated)
+        // replays zero entries → state reverts to defaults.
+        let m2 = Manifest::open(temp.path()).unwrap();
+        assert_eq!(m2.get_last_lsn().unwrap(), 0);
+        assert_eq!(m2.get_active_wal().unwrap(), 0);
+        assert!(m2.get_frozen_wals().unwrap().is_empty());
+        assert!(m2.get_sstables().unwrap().is_empty());
     }
 
     // ----------------------------------------------------------------
@@ -326,7 +329,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         {
-            let mut m = open_manifest(&temp);
+            let m = open_manifest(&temp);
             m.set_active_wal(55).unwrap();
             m.add_frozen_wal(88).unwrap();
             m.update_lsn(9).unwrap();

@@ -217,7 +217,7 @@ impl Engine {
         // 2. Discover existing WAL files and load active/frozen WAL info from manifest.
         let active_wal_nr = manifest.get_active_wal()?;
         let active_wal_path = format!(
-            "{}/{}/wal-{:06}.log",
+            "{}/{}/{:06}.log",
             path.as_ref().to_string_lossy(),
             MEMTABLE_DIR,
             active_wal_nr
@@ -228,7 +228,7 @@ impl Engine {
         let mut frozen_memtables = Vec::new();
         for wal_nr in frozen_wals {
             let frozen_wal_path = format!(
-                "{}/{}/wal-{:06}.log",
+                "{}/{}/{:06}.log",
                 path.as_ref().to_string_lossy(),
                 MEMTABLE_DIR,
                 wal_nr
@@ -248,8 +248,7 @@ impl Engine {
                 && file_path.extension().and_then(|s| s.to_str()) == Some("sst")
                 && let Some(file_name) = file_path.file_name().and_then(|s| s.to_str())
                 && let Some(id) = file_name
-                    .strip_prefix("sstable-")
-                    .and_then(|s| s.strip_suffix(".sst"))
+                    .strip_suffix(".sst")
                     .and_then(|s| s.parse::<u64>().ok())
                 && !sstables.iter().any(|entry| entry.id == id)
             {
@@ -585,7 +584,7 @@ impl Engine {
 
         let new_active = Memtable::new(
             format!(
-                "{}/{}/wal-{:06}.log",
+                "{}/{}/{:06}.log",
                 inner.data_dir, MEMTABLE_DIR, new_active_wal_id
             ),
             None,
@@ -711,10 +710,7 @@ impl Engine {
 
         // Generate unique SSTable ID and path
         let sstable_id = Self::next_sstable_id(inner)?;
-        let sstable_path = format!(
-            "{}/{}/sstable-{}.sst",
-            inner.data_dir, SSTABLE_DIR, sstable_id
-        );
+        let sstable_path = format!("{}/{}/{:06}.sst", inner.data_dir, SSTABLE_DIR, sstable_id);
 
         // Build the SSTable
         let point_count = point_entries.len();

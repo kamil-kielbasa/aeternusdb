@@ -97,7 +97,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         write_records(&path, 3);
 
         let header_end = (WAL_HDR_SIZE + WAL_CRC32_SIZE) as u64;
@@ -128,7 +128,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         write_records(&path, 3);
 
         let header_end = (WAL_HDR_SIZE + WAL_CRC32_SIZE) as u64;
@@ -158,7 +158,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         write_records(&path, 3);
 
         let header_end = (WAL_HDR_SIZE + WAL_CRC32_SIZE) as u64;
@@ -194,7 +194,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let full_size = write_records(&path, 3);
 
         // Remove the last 4 bytes (trailing CRC32 of the third record).
@@ -229,7 +229,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let full_size = write_records(&path, 3);
 
         // Remove the last 2 bytes (partial CRC32).
@@ -264,7 +264,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         // Write 1 record and capture size.
         let size_after_1 = write_records(&path, 1);
@@ -314,7 +314,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         // Create a 0-byte file.
         {
@@ -355,7 +355,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         // Create a valid WAL.
         write_records(&path, 1);
@@ -395,7 +395,7 @@ mod tests {
         init_tracing();
 
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let full_size = write_records(&path, 3);
 
         // Truncate: remove last record's CRC.

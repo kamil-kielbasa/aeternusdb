@@ -46,7 +46,7 @@ mod tests {
     #[test]
     fn inject_max_lsn_sets_counter() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         // Default counter starts at None (no writes yet)
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn empty_key_range_delete_rejected() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         // Empty start key
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn reversed_range_delete_is_rejected() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         for i in 0..5 {
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn write_buffer_overflow_returns_flush_required() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 128).unwrap();
 
         let mut succeeded = 0;
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn concurrent_put_get_no_data_race() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Arc::new(Memtable::new(&path, None, 1024 * 1024).unwrap());
 
         let num_writers = 4;
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn stats_empty_memtable() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         let stats = memtable.stats().unwrap();
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn stats_after_puts() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         for i in 0..5 {
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn stats_overwrite_increases_entry_count() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         memtable.put(b"a".to_vec(), b"v1".to_vec()).unwrap();
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn stats_counts_point_tombstones() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         memtable.put(b"a".to_vec(), b"v1".to_vec()).unwrap();
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn stats_counts_range_tombstones() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         memtable.put(b"a".to_vec(), b"v1".to_vec()).unwrap();
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn stats_mixed_operations() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         // 5 initial puts
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn stats_size_grows_monotonically() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let memtable = Memtable::new(&path, None, 1024 * 1024).unwrap();
 
         let mut prev_size = 0;

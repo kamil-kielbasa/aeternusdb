@@ -61,7 +61,7 @@ mod tests {
         init_tracing();
 
         let temp = TempDir::new().unwrap();
-        let mut m = open_manifest(&temp);
+        let m = open_manifest(&temp);
 
         m.remove_sstable(999).unwrap();
 
@@ -91,7 +91,7 @@ mod tests {
         init_tracing();
 
         let temp = TempDir::new().unwrap();
-        let mut m = open_manifest(&temp);
+        let m = open_manifest(&temp);
 
         m.remove_frozen_wal(999).unwrap();
 
@@ -123,7 +123,7 @@ mod tests {
         init_tracing();
 
         let temp = TempDir::new().unwrap();
-        let mut m = open_manifest(&temp);
+        let m = open_manifest(&temp);
 
         m.add_sstable(sst_entry(10)).unwrap();
         m.add_sstable(sst_entry(10)).unwrap();

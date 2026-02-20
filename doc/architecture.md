@@ -137,15 +137,15 @@ The design guarantees that no acknowledged write is lost after a crash, and no p
 ```
 <data_dir>/
 ├── manifest/
-│   ├── wal-000001.log         # Manifest WAL
-│   └── manifest.snapshot      # Latest manifest snapshot
+│   ├── 000001.log         # Manifest WAL
+│   └── MANIFEST-000001      # Latest manifest snapshot
 ├── memtables/
-│   ├── wal-000001.log         # Active memtable WAL
-│   ├── wal-000002.log         # Frozen memtable WAL (pending flush)
+│   ├── 000001.log         # Active memtable WAL
+│   ├── 000002.log         # Frozen memtable WAL (pending flush)
 │   └── ...
 └── sstables/
-    ├── sstable-1.sst
-    ├── sstable-2.sst
+    ├── 000001.sst
+    ├── 000002.sst
     └── ...
 ```
 

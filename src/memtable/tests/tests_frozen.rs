@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn get_matches_active_memtable() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         let memtable = Memtable::new(&path, None, 1024).unwrap();
 
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn scan_matches_active_memtable() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         let memtable = Memtable::new(&path, None, 1024).unwrap();
 
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn iter_for_flush_returns_all_records() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         let memtable = Memtable::new(&path, None, 4096).unwrap();
 
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn keeps_wal_alive() {
         let tmp = TempDir::new().unwrap();
-        let wal_path = tmp.path().join("wal-000000.log");
+        let wal_path = tmp.path().join("000000.log");
 
         {
             let memtable = Memtable::new(&wal_path, None, 4096).unwrap();

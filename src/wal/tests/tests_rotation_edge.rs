@@ -32,11 +32,11 @@ mod tests {
     /// 4. Replay all and verify record count.
     ///
     /// # Expected behavior
-    /// 21 WAL files (`wal-000000.log` .. `wal-000020.log`), 100 total records.
+    /// 21 WAL files (`000000.log` .. `000020.log`), 100 total records.
     #[test]
     fn rapid_successive_rotations() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let mut wal: Wal<u64> = Wal::open(&path, None).unwrap();
 
         let rotations = 20;
@@ -56,7 +56,7 @@ mod tests {
             .unwrap()
             .filter_map(|e| {
                 let name = e.ok()?.file_name().to_string_lossy().to_string();
-                if name.starts_with("wal-") && name.ends_with(".log") {
+                if name.ends_with(".log") {
                     Some(name)
                 } else {
                     None
@@ -73,13 +73,13 @@ mod tests {
 
         // Verify sequential naming.
         for (i, f) in files.iter().enumerate() {
-            assert_eq!(f, &format!("wal-{i:06}.log"), "Unexpected WAL filename");
+            assert_eq!(f, &format!("{i:06}.log"), "Unexpected WAL filename");
         }
 
         // Replay all and count records.
         let mut total = 0;
         for seq in 0..=rotations {
-            let p = tmp.path().join(format!("wal-{seq:06}.log"));
+            let p = tmp.path().join(format!("{seq:06}.log"));
             let reader: Wal<u64> = Wal::open(&p, None).unwrap();
             for record in reader.replay_iter().unwrap() {
                 record.unwrap();
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn append_works_after_rotation() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let mut wal: Wal<u64> = Wal::open(&path, None).unwrap();
 
         for i in 0..3u64 {
@@ -126,7 +126,7 @@ mod tests {
         }
 
         // Reopen new segment and replay.
-        let new_path = tmp.path().join("wal-000001.log");
+        let new_path = tmp.path().join("000001.log");
         let reader: Wal<u64> = Wal::open(&new_path, None).unwrap();
         let records: Vec<u64> = reader.replay_iter().unwrap().map(|r| r.unwrap()).collect();
         assert_eq!(records, vec![10, 11, 12]);
@@ -142,7 +142,7 @@ mod tests {
     ///
     /// # Actions
     /// 1. Create WAL segments 0, 1, 2, 3 with data.
-    /// 2. Delete segment 2 (wal-000002.log).
+    /// 2. Delete segment 2 (000002.log).
     /// 3. Reopen segments 0, 1, 3 — all must open and replay.
     ///
     /// # Expected behavior
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn wal_sequence_gap_segments_open_independently() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let mut wal: Wal<u64> = Wal::open(&path, None).unwrap();
 
         // Create 4 segments.
@@ -165,13 +165,13 @@ mod tests {
         }
 
         // Delete segment 2.
-        let gap_path = tmp.path().join("wal-000002.log");
+        let gap_path = tmp.path().join("000002.log");
         assert!(gap_path.exists());
         fs::remove_file(&gap_path).unwrap();
 
         // Remaining segments must open independently.
         for seq in [0, 1, 3] {
-            let p = tmp.path().join(format!("wal-{seq:06}.log"));
+            let p = tmp.path().join(format!("{seq:06}.log"));
             let reader: Wal<u64> = Wal::open(&p, None).unwrap();
             let records: Vec<u64> = reader.replay_iter().unwrap().map(|r| r.unwrap()).collect();
             assert_eq!(records.len(), 3, "Segment {seq} should have 3 records");
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn rotation_preserves_max_record_size() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let custom_max = 512u32;
         let mut wal: Wal<u64> = Wal::open(&path, Some(custom_max)).unwrap();
         assert_eq!(wal.max_record_size(), custom_max);
@@ -211,7 +211,7 @@ mod tests {
         }
 
         // Reopen last segment and verify.
-        let last_path = tmp.path().join("wal-000005.log");
+        let last_path = tmp.path().join("000005.log");
         let reader: Wal<u64> = Wal::open(&last_path, None).unwrap();
         assert_eq!(reader.max_record_size(), custom_max);
     }

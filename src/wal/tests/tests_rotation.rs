@@ -29,7 +29,7 @@ mod tests {
     /// with the next sequence number.
     ///
     /// # Starting environment
-    /// Fresh WAL at sequence 0 (`wal-000000.log`).
+    /// Fresh WAL at sequence 0 (`000000.log`).
     ///
     /// # Actions
     /// 1. Open WAL, note initial sequence.
@@ -38,11 +38,11 @@ mod tests {
     ///
     /// # Expected behavior
     /// - `rotate_next()` returns `seq + 1`.
-    /// - Both `wal-000000.log` and `wal-000001.log` exist on disk.
+    /// - Both `000000.log` and `000001.log` exist on disk.
     #[test]
     fn rotate_next_increments_seq() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
         let mut wal: Wal<u64> = Wal::open(&path, None).unwrap();
 
         let seq1 = wal.wal_seq();
@@ -59,12 +59,12 @@ mod tests {
         files.sort();
 
         assert!(
-            files.contains(&"wal-000000.log".to_string()),
-            "Missing wal-00.log after rotate"
+            files.contains(&"000000.log".to_string()),
+            "Missing 000000.log after rotate"
         );
         assert!(
-            files.contains(&"wal-000001.log".to_string()),
-            "Missing wal-01.log after rotate"
+            files.contains(&"000001.log".to_string()),
+            "Missing 000001.log after rotate"
         );
     }
 
@@ -83,7 +83,7 @@ mod tests {
     /// 1. For each of 4 segments (seq 0 → 3):
     ///    a. Append 10 `u64` values.
     ///    b. Rotate to next segment.
-    /// 2. List directory → expect `wal-000000.log` through `wal-000004.log`.
+    /// 2. List directory → expect `000000.log` through `000004.log`.
     /// 3. Reopen each segment and replay its records.
     /// 4. Concatenate all replayed records.
     ///
@@ -93,13 +93,13 @@ mod tests {
     #[test]
     fn multi_rotation_persists_all_data() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("wal-000000.log");
+        let path = tmp.path().join("000000.log");
 
         let mut wal: Wal<u64> = Wal::open(&path, None).unwrap();
 
         let mut input_data = Vec::new();
 
-        let rotations = 3; // after this → wal-000000 .. wal-000003
+        let rotations = 3; // after this → 000000 .. 000003
         let writes_per_rotation = 10;
 
         for _ in 0..=rotations {
@@ -115,13 +115,13 @@ mod tests {
         let mut files: Vec<String> = fs::read_dir(tmp.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .filter(|f| f.starts_with("wal-") && f.ends_with(".log"))
+            .filter(|f| f.ends_with(".log"))
             .collect();
 
         files.sort();
 
         let expected: Vec<String> = (0..=rotations + 1)
-            .map(|seq| format!("wal-{seq:06}.log"))
+            .map(|seq| format!("{seq:06}.log"))
             .collect();
 
         assert_eq!(files, expected, "Unexpected set of WAL files");
@@ -129,7 +129,7 @@ mod tests {
         let mut replayed = Vec::new();
 
         for seq in 0..=rotations + 1 {
-            let p = tmp.path().join(format!("wal-{seq:06}.log"));
+            let p = tmp.path().join(format!("{seq:06}.log"));
             if !p.exists() {
                 panic!("Missing WAL file: {}", p.display());
             }
@@ -161,12 +161,12 @@ mod tests {
     /// WAL must refuse to open it.
     ///
     /// # Starting environment
-    /// Fresh WAL at sequence 0 (`wal-000000.log`).
+    /// Fresh WAL at sequence 0 (`000000.log`).
     ///
     /// # Actions
     /// 1. Open and close a WAL (seq 0 stored in header).
-    /// 2. Rename `wal-000000.log` → `wal-000005.log` on disk.
-    /// 3. Attempt to open `wal-000005.log`.
+    /// 2. Rename `000000.log` → `000005.log` on disk.
+    /// 3. Attempt to open `000005.log`.
     ///
     /// # Expected behavior
     /// `Wal::open()` returns an error due to the sequence mismatch
@@ -177,12 +177,12 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
 
-        let original_path = tmp.path().join("wal-000000.log");
+        let original_path = tmp.path().join("000000.log");
         let wal: Wal<u64> = Wal::open(&original_path, None).unwrap();
         let original_seq = wal.wal_seq();
         assert_eq!(original_seq, 0);
 
-        let renamed_path = tmp.path().join("wal-000005.log");
+        let renamed_path = tmp.path().join("000005.log");
         fs::rename(&original_path, &renamed_path).expect("Failed to rename WAL file");
 
         let files: Vec<_> = fs::read_dir(tmp.path())
@@ -190,7 +190,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0], "wal-000005.log");
+        assert_eq!(files[0], "000005.log");
 
         let result = Wal::<u64>::open(&renamed_path, None);
 

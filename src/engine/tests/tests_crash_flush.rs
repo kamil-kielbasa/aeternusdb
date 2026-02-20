@@ -94,7 +94,7 @@ mod tests {
 
         // Phase 2: Plant a fake .tmp file (simulating incomplete flush).
         let sst_dir = path.join(SSTABLE_DIR);
-        let tmp_file_path = sst_dir.join("sstable-999999.tmp");
+        let tmp_file_path = sst_dir.join("999999.tmp");
         {
             let mut f = File::create(&tmp_file_path).unwrap();
             f.write_all(b"incomplete sstable data garbage").unwrap();
@@ -157,7 +157,7 @@ mod tests {
 
         // Phase 2: Plant orphan SSTable.
         let sst_dir = path.join(SSTABLE_DIR);
-        let orphan_path = sst_dir.join("sstable-999999.sst");
+        let orphan_path = sst_dir.join("999999.sst");
         {
             let mut f = File::create(&orphan_path).unwrap();
             f.write_all(b"fake sstable content").unwrap();
@@ -170,7 +170,7 @@ mod tests {
 
         assert!(
             !orphan_path.exists(),
-            "Orphan sstable-999999.sst should be deleted on recovery"
+            "Orphan 999999.sst should be deleted on recovery"
         );
 
         // Phase 4: All data intact.
@@ -420,11 +420,11 @@ mod tests {
         // Plant debris.
         let sst_dir = path.join(SSTABLE_DIR);
         {
-            let mut f = File::create(sst_dir.join("sstable-888888.tmp")).unwrap();
+            let mut f = File::create(sst_dir.join("888888.tmp")).unwrap();
             f.write_all(b"incomplete data").unwrap();
         }
         {
-            let mut f = File::create(sst_dir.join("sstable-999999.sst")).unwrap();
+            let mut f = File::create(sst_dir.join("999999.sst")).unwrap();
             f.write_all(b"orphan sstable").unwrap();
         }
 
@@ -433,7 +433,7 @@ mod tests {
 
         // Orphan .sst should be cleaned up.
         assert!(
-            !sst_dir.join("sstable-999999.sst").exists(),
+            !sst_dir.join("999999.sst").exists(),
             "Orphan .sst should be removed"
         );
 

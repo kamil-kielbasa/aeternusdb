@@ -4,7 +4,7 @@
 This document specifies the **Sorted String Table (SSTable)** format used by AeternusDB.  
 SSTables are **immutable**, **sorted**, and **checksummed** on-disk data files that store flushed or compacted key-value pairs (and tombstones).
 
-Design improvements based on RocksDB/LevelDB best practices for:
+Design principles:
 - ✅ Sequential write optimization (no backward seeking)
 - ✅ Fixed-size header (no rewrites during build)
 - ✅ Improved extensibility via metaindex
@@ -307,7 +307,7 @@ Lookup("eagle"):
 ```
 
 **Note on BlockHandle:**
-- `(offset, size)` pair forms a BlockHandle (RocksDB concept)
+- `(offset, size)` pair forms a BlockHandle
 - Offset points to start of block content
 - Size includes content + trailer (entire block)
 
@@ -616,8 +616,7 @@ They **do not filter** based on LSN or cross-SST conflicts.
    - Fast per-SSTable scans without LSN checks.  
    - Bloom filters and min/max key ranges allow skipping SSTables for `get` operations.
 
-4. **Consistency with industry:**  
-   - Mirrors RocksDB/LevelDB, Scylla, and Cassandra design.  
+4. **Consistency with industry practice:**  
    - Ensures that `get` and `scan` operations remain **correct and deterministic** across multiple SSTables.
 
 ---
