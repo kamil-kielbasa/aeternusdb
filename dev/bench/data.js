@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771587675309,
+  "lastUpdate": 1771593305924,
   "repoUrl": "https://github.com/kamil-kielbasa/aeternusdb",
   "entries": {
     "AeternusDB Benchmarks": [
@@ -971,6 +971,366 @@ window.BENCHMARK_DATA = {
             "name": "ycsb/workload/F_50read_50rmw",
             "value": 1193880980,
             "range": "± 107541569",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "kamkie1996@gmail.com",
+            "name": "Kamil Kielbasa",
+            "username": "kamil-kielbasa"
+          },
+          "committer": {
+            "email": "kamkie1996@gmail.com",
+            "name": "Kamil Kielbasa",
+            "username": "kamil-kielbasa"
+          },
+          "distinct": true,
+          "id": "8bf6c255f55bfe986e93bad92292e3f1aba23e88",
+          "message": "feat: hardening of wal",
+          "timestamp": "2026-02-20T10:46:19+01:00",
+          "tree_id": "08d5b9a06cda3d185ed1bdcb3a34025b8ed79891",
+          "url": "https://github.com/kamil-kielbasa/aeternusdb/commit/8bf6c255f55bfe986e93bad92292e3f1aba23e88"
+        },
+        "date": 1771593303359,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "put/memtable_only/128B",
+            "value": 269974,
+            "range": "± 21861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "put/memtable_only/1K",
+            "value": 284954,
+            "range": "± 27148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "put/sequential_with_flush",
+            "value": 323512,
+            "range": "± 42518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/memtable_hit",
+            "value": 234,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/memtable_miss",
+            "value": 261,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/sstable_hit",
+            "value": 2375,
+            "range": "± 71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/sstable_miss",
+            "value": 1753,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "delete/point",
+            "value": 266954,
+            "range": "± 16666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "delete/range",
+            "value": 267845,
+            "range": "± 20314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/memtable/10_keys",
+            "value": 1937,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/memtable/100_keys",
+            "value": 15663,
+            "range": "± 210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/memtable/1000_keys",
+            "value": 154330,
+            "range": "± 1444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/sstable/10_keys",
+            "value": 11029,
+            "range": "± 70",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/sstable/100_keys",
+            "value": 29797,
+            "range": "± 242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/sstable/1000_keys",
+            "value": 205675,
+            "range": "± 6191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compaction/major/1000",
+            "value": 6084949,
+            "range": "± 222827",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compaction/major/5000",
+            "value": 14184401,
+            "range": "± 133528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "recovery/open_existing/1000",
+            "value": 1623314,
+            "range": "± 48993",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "recovery/open_existing/10000",
+            "value": 1645195,
+            "range": "± 45215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/64B",
+            "value": 274217,
+            "range": "± 21846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/256B",
+            "value": 269697,
+            "range": "± 14934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/1K",
+            "value": 280656,
+            "range": "± 16139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/4K",
+            "value": 326026,
+            "range": "± 23070",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/readers/1",
+            "value": 15410102,
+            "range": "± 162835",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/readers/2",
+            "value": 16871202,
+            "range": "± 114933",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/readers/4",
+            "value": 16872189,
+            "range": "± 180816",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/read_under_write/1_writer",
+            "value": 71806872,
+            "range": "± 2400411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/read_under_write/2_writer",
+            "value": 129617035,
+            "range": "± 4842161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "overwrite/update_memtable",
+            "value": 279184,
+            "range": "± 21526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "overwrite/update_sstable",
+            "value": 269359,
+            "range": "± 17940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dataset_scaling/get/1K",
+            "value": 1856,
+            "range": "± 32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dataset_scaling/get/10K",
+            "value": 2282,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dataset_scaling/get/50K",
+            "value": 3115,
+            "range": "± 110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dataset_scaling/get/100K",
+            "value": 5144,
+            "range": "± 324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tombstone_scan/dense_tombstones/0%",
+            "value": 29690,
+            "range": "± 185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tombstone_scan/dense_tombstones/25%",
+            "value": 21950,
+            "range": "± 216",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tombstone_scan/dense_tombstones/50%",
+            "value": 27304,
+            "range": "± 863",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tombstone_scan/dense_tombstones/75%",
+            "value": 34804,
+            "range": "± 1120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "close/empty",
+            "value": 1375684,
+            "range": "± 26573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "close/with_data/1000",
+            "value": 1688223,
+            "range": "± 58385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "close/with_data/5000",
+            "value": 2570514,
+            "range": "± 211373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/put/16B",
+            "value": 272480,
+            "range": "± 18123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/put/64B",
+            "value": 270146,
+            "range": "± 16192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/put/256B",
+            "value": 276605,
+            "range": "± 22427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/put/512B",
+            "value": 287046,
+            "range": "± 20473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/get/16B",
+            "value": 2367,
+            "range": "± 113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/get/64B",
+            "value": 2144,
+            "range": "± 43",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/get/256B",
+            "value": 3238,
+            "range": "± 115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "key_size/get/512B",
+            "value": 4809,
+            "range": "± 252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/load/sequential/10000",
+            "value": 2866376777,
+            "range": "± 67226189",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/A_50read_50update",
+            "value": 715785196,
+            "range": "± 19630475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/B_95read_5update",
+            "value": 86199656,
+            "range": "± 6868711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/C_100read",
+            "value": 16928095,
+            "range": "± 5873248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/D_95read_5insert",
+            "value": 88807377,
+            "range": "± 6823671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/E_95scan_5insert",
+            "value": 156338534,
+            "range": "± 10177543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/F_50read_50rmw",
+            "value": 724970054,
+            "range": "± 11106933",
             "unit": "ns/iter"
           }
         ]
