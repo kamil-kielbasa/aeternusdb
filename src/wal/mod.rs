@@ -5,7 +5,7 @@
 //! It provides **type-safe**, **CRC-protected**, and **thread-safe** persistence of arbitrary records
 //! that implement the [`WalData`] trait.
 //!
-//! //! ## Design Overview
+//! ## Design Overview
 //!
 //! The WAL ensures crash recovery and corruption detection for any serializable record type
 //! (`MemTableRecord`, `ManifestRecord`, etc.). It uses [`crate::encoding`] for compact serialization
@@ -66,7 +66,7 @@ use crate::encoding::{self, EncodingError};
 use crc32fast::Hasher as Crc32;
 use std::ffi::OsStr;
 use thiserror::Error;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const U32_SIZE: usize = std::mem::size_of::<u32>();
 
@@ -76,6 +76,7 @@ const U32_SIZE: usize = std::mem::size_of::<u32>();
 
 /// Errors returned by WAL operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum WalError {
     /// Underlying I/O error.
     #[error("I/O error: {0}")]
@@ -117,16 +118,16 @@ pub enum WalError {
 #[derive(Debug)]
 pub struct WalHeader {
     /// Magic constant to identify WAL files (`b"AWAL"`).
-    pub magic: [u8; 4],
+    magic: [u8; 4],
 
     /// WAL format version.
-    pub version: u32,
+    version: u32,
 
     /// Maximum record size (in bytes).
-    pub max_record_size: u32,
+    max_record_size: u32,
 
     /// Monotonically-increasing WAL sequence number (segment id).
-    pub wal_seq: u64,
+    wal_seq: u64,
 }
 
 impl WalHeader {
@@ -143,6 +144,7 @@ impl WalHeader {
     ///
     /// # Parameters
     /// - `max_record_size`: Maximum record size limit.
+    /// - `wal_seq`: WAL segment sequence number.
     pub fn new(max_record_size: u32, wal_seq: u64) -> Self {
         Self {
             magic: Self::MAGIC,
@@ -150,6 +152,29 @@ impl WalHeader {
             max_record_size,
             wal_seq,
         }
+    }
+
+    /// Encoded size of the header in bytes (without the trailing CRC).
+    ///
+    /// Layout: `magic(4) + version(4) + max_record_size(4) + wal_seq(8)` = 20.
+    pub const ENCODED_SIZE: usize = 4 + 4 + 4 + 8;
+
+    /// Total on-disk size of the header *including* its trailing CRC32.
+    pub const HEADER_DISK_SIZE: usize = Self::ENCODED_SIZE + U32_SIZE;
+
+    /// Returns the WAL segment sequence number.
+    pub fn wal_seq(&self) -> u64 {
+        self.wal_seq
+    }
+
+    /// Returns the maximum record size (in bytes).
+    pub fn max_record_size(&self) -> u32 {
+        self.max_record_size
+    }
+
+    /// Returns the WAL format version.
+    pub fn version(&self) -> u32 {
+        self.version
     }
 }
 
@@ -220,10 +245,10 @@ pub struct Wal<T: WalData> {
     inner_file: Arc<Mutex<File>>,
 
     /// Path to the WAL file on disk.
-    path: String,
+    path: PathBuf,
 
     /// Persistent header with metadata and integrity info.
-    pub header: WalHeader,
+    header: WalHeader,
 
     /// Marker field to associate this WAL with the generic record type `T`.
     _phantom: std::marker::PhantomData<T>,
@@ -256,72 +281,37 @@ impl<T: WalData> Wal<T> {
                 wal_seq,
             );
 
-            let header_bytes = encoding::encode_to_vec(&header)?;
-
-            let mut hasher = Crc32::new();
-            hasher.update(&header_bytes);
-            let checksum = hasher.finalize();
-
-            file.write_all(&header_bytes)?;
-            file.write_all(&checksum.to_le_bytes())?;
+            write_header(&mut file, &header)?;
             file.sync_all()?;
 
-            info!("Created new WAL header at {}", path_ref.display());
+            info!(path = %path_ref.display(), seq = wal_seq, "WAL created with new header");
 
             header
         } else {
             // Existing WAL → read and validate header + checksum.
             file.seek(SeekFrom::Start(0))?;
 
-            let sample = WalHeader::new(WalHeader::DEFAULT_MAX_RECORD_SIZE, 0);
-            let sample_bytes = encoding::encode_to_vec(&sample)?;
-            let header_len = sample_bytes.len();
-
-            let mut header_bytes = vec![0u8; header_len];
-            file.read_exact(&mut header_bytes)?;
-
-            let mut checksum_bytes = [0u8; U32_SIZE];
-            file.read_exact(&mut checksum_bytes)?;
-            let stored_checksum = u32::from_le_bytes(checksum_bytes);
-
-            let mut hasher = Crc32::new();
-            hasher.update(&header_bytes);
-            let computed_checksum = hasher.finalize();
-
-            if stored_checksum != computed_checksum {
-                return Err(WalError::InvalidHeader("Header checksum mismatched".into()));
-            }
-
-            let (header, _) = encoding::decode_from_slice::<WalHeader>(&header_bytes)?;
-
-            if header.magic != WalHeader::MAGIC {
-                return Err(WalError::InvalidHeader("Bad magic".into()));
-            }
-            if header.version != WalHeader::VERSION {
-                return Err(WalError::InvalidHeader(format!(
-                    "Unsupported version {}",
-                    header.version
-                )));
-            }
+            let header = read_and_validate_header(&mut file)?;
 
             if header.wal_seq != wal_seq {
-                return Err(WalError::InvalidHeader("Invalid sequence number".into()));
+                return Err(WalError::InvalidHeader("sequence number mismatch".into()));
             }
 
-            info!(
-                "Loaded WAL header from {} (max_record_size={})",
-                path_ref.display(),
-                header.max_record_size
+            debug!(
+                path = %path_ref.display(),
+                max_record_size = header.max_record_size,
+                seq = header.wal_seq,
+                "WAL header validated"
             );
 
             header
         };
 
-        info!("Opened WAL file at {}", path_ref.display());
+        info!(path = %path_ref.display(), seq = header.wal_seq, "WAL opened");
 
         Ok(Self {
             inner_file: Arc::new(Mutex::new(file)),
-            path: path_ref.display().to_string(),
+            path: path_ref.to_path_buf(),
             header,
             _phantom: std::marker::PhantomData,
         })
@@ -349,8 +339,6 @@ impl<T: WalData> Wal<T> {
     /// # Parameters
     /// - `record`: Reference to the record implementing [`WalData`].
     pub fn append(&self, record: &T) -> Result<(), WalError> {
-        trace!("Appending record: {:?}", record,);
-
         let record_bytes = encoding::encode_to_vec(record)?;
         let record_len = u32::try_from(record_bytes.len())
             .map_err(|_| WalError::RecordTooLarge(record_bytes.len()))?;
@@ -359,11 +347,8 @@ impl<T: WalData> Wal<T> {
             return Err(WalError::RecordTooLarge(record_len as usize));
         }
 
-        // Compute checksum over [len_le || record_bytes]
-        let mut hasher = Crc32::new();
-        hasher.update(&record_len.to_le_bytes());
-        hasher.update(&record_bytes);
-        let checksum = hasher.finalize();
+        let len_bytes = record_len.to_le_bytes();
+        let checksum = compute_crc(&[&len_bytes, &record_bytes]);
 
         // Lock and append atomically (from user's perspective).
         let mut guard = self
@@ -371,14 +356,15 @@ impl<T: WalData> Wal<T> {
             .lock()
             .map_err(|_| WalError::Internal("Mutex poisoned".into()))?;
 
-        guard.write_all(&record_len.to_le_bytes())?;
+        guard.write_all(&len_bytes)?;
         guard.write_all(&record_bytes)?;
         guard.write_all(&checksum.to_le_bytes())?;
         guard.sync_all()?;
 
-        info!(
-            "Appended record of length {} with checksum {:08x}",
-            record_len, checksum
+        trace!(
+            len = record_len,
+            crc = format_args!("{checksum:08x}"),
+            "WAL record appended"
         );
         Ok(())
     }
@@ -388,10 +374,9 @@ impl<T: WalData> Wal<T> {
     /// The iterator reads the WAL sequentially, verifies CRC checksums,
     /// and decodes each entry into its original record type `T`.
     pub fn replay_iter(&self) -> Result<WalIter<T>, WalError> {
-        info!("Starting WAL replay from file: {}", self.path);
+        debug!(path = %self.path.display(), "WAL replay started");
 
-        let header_bytes = encoding::encode_to_vec(&self.header)?;
-        let start_offset = (header_bytes.len() + U32_SIZE) as u64;
+        let start_offset = WalHeader::HEADER_DISK_SIZE as u64;
 
         Ok(WalIter {
             file: Arc::clone(&self.inner_file),
@@ -413,17 +398,10 @@ impl<T: WalData> Wal<T> {
         guard.set_len(0)?;
         guard.seek(SeekFrom::Start(0))?;
 
-        let header_bytes = encoding::encode_to_vec(&self.header)?;
-
-        let mut hasher = Crc32::new();
-        hasher.update(&header_bytes);
-        let checksum = hasher.finalize();
-
-        guard.write_all(&header_bytes)?;
-        guard.write_all(&checksum.to_le_bytes())?;
+        write_header(&mut *guard, &self.header)?;
         guard.sync_all()?;
 
-        info!("Truncated WAL file: {}", self.path);
+        info!(path = %self.path.display(), "WAL truncated");
         Ok(())
     }
 
@@ -442,22 +420,44 @@ impl<T: WalData> Wal<T> {
             guard.sync_all()?;
         }
 
-        let next_seq = self.header.wal_seq.saturating_add(1);
+        let next_seq = self
+            .header
+            .wal_seq
+            .checked_add(1)
+            .ok_or_else(|| WalError::Internal("WAL sequence number overflow".into()))?;
 
         let cur_path = PathBuf::from(&self.path);
         let dir = cur_path.parent().unwrap_or_else(|| Path::new("."));
         let next_path = dir.join(format!("wal-{next_seq:06}.log"));
 
-        let mut new_wal = Wal::<T>::open(&next_path, Some(self.header.max_record_size))?;
-        new_wal.header.wal_seq = next_seq;
+        let new_wal = Wal::<T>::open(&next_path, Some(self.header.max_record_size))?;
         *self = new_wal;
 
         Ok(next_seq)
     }
 
     /// Get the path of the underlying WAL file.
-    pub fn path(&self) -> &str {
+    pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Returns the WAL segment sequence number.
+    pub fn wal_seq(&self) -> u64 {
+        self.header.wal_seq
+    }
+
+    /// Returns the configured maximum record size.
+    pub fn max_record_size(&self) -> u32 {
+        self.header.max_record_size
+    }
+
+    /// Returns the current on-disk file size in bytes.
+    pub fn file_size(&self) -> Result<u64, WalError> {
+        let guard = self
+            .inner_file
+            .lock()
+            .map_err(|_| WalError::Internal("Mutex poisoned".into()))?;
+        Ok(guard.metadata()?.len())
     }
 }
 
@@ -466,15 +466,15 @@ impl<T: WalData> Drop for Wal<T> {
         match self.inner_file.lock() {
             Ok(guard) => {
                 if let Err(e) = guard.sync_all() {
-                    error!("Failed to sync WAL on drop: {}", e);
+                    error!(path = %self.path.display(), error = %e, "WAL sync failed on drop");
                 }
             }
             Err(poisoned) => {
                 let file = poisoned.into_inner();
                 if let Err(e) = file.sync_all() {
-                    error!("Failed to sync WAL (poisoned) on drop: {}", e);
+                    error!(path = %self.path.display(), error = %e, "WAL sync failed on drop (poisoned lock)");
                 } else {
-                    warn!("Recovered and synced WAL after poisoned lock");
+                    warn!(path = %self.path.display(), "WAL recovered and synced after poisoned lock");
                 }
             }
         }
@@ -493,6 +493,12 @@ impl<T: WalData> Drop for Wal<T> {
 /// - **Stream** records without allocating the entire WAL into memory (one record at a time).
 /// - **Share** the WAL file safely with appenders by holding an `Arc<Mutex<File>>`.
 /// - **Detect corruption** and truncated writes using CRC32 checksums and length bounds.
+///
+/// # Lifetime & ownership
+///
+/// The iterator holds an `Arc` reference to the underlying file handle. This means
+/// it can **outlive** the [`Wal`] that created it — the file will remain open until
+/// all iterators (and the WAL itself) are dropped.
 pub struct WalIter<T: WalData> {
     /// Shared file handle protected by a mutex.
     file: Arc<Mutex<File>>,
@@ -505,6 +511,15 @@ pub struct WalIter<T: WalData> {
 
     /// Marker field to associate this WAL iterator with the generic record type `T`.
     _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: WalData> std::fmt::Debug for WalIter<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalIter")
+            .field("offset", &self.offset)
+            .field("max_record_size", &self.max_record_size)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T: WalData> Iterator for WalIter<T> {
@@ -528,7 +543,7 @@ impl<T: WalData> Iterator for WalIter<T> {
         match guard.read_exact(&mut len_bytes) {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                trace!("End of WAL reached");
+                trace!(offset = self.offset, "WAL replay reached end of file");
                 return None;
             }
             Err(e) => return Some(Err(WalError::Io(e))),
@@ -539,13 +554,17 @@ impl<T: WalData> Iterator for WalIter<T> {
             return Some(Err(WalError::RecordTooLarge(record_len)));
         }
 
-        trace!("Reading record of length {}", record_len);
+        trace!(offset = self.offset, len = record_len, "WAL reading record");
 
         // Read record bytes.
         let mut record_bytes = vec![0u8; record_len];
         if let Err(e) = guard.read_exact(&mut record_bytes) {
             if e.kind() == io::ErrorKind::UnexpectedEof {
-                error!("Truncated WAL record detected");
+                warn!(
+                    offset = self.offset,
+                    len = record_len,
+                    "WAL truncated record (partial payload)"
+                );
                 return Some(Err(WalError::UnexpectedEof));
             }
             return Some(Err(WalError::Io(e)));
@@ -555,7 +574,11 @@ impl<T: WalData> Iterator for WalIter<T> {
         let mut checksum_bytes = [0u8; U32_SIZE];
         if let Err(e) = guard.read_exact(&mut checksum_bytes) {
             if e.kind() == io::ErrorKind::UnexpectedEof {
-                error!("Truncated WAL record detected");
+                warn!(
+                    offset = self.offset,
+                    len = record_len,
+                    "WAL truncated record (partial checksum)"
+                );
                 return Some(Err(WalError::UnexpectedEof));
             }
             return Some(Err(WalError::Io(e)));
@@ -568,14 +591,13 @@ impl<T: WalData> Iterator for WalIter<T> {
         }
 
         // Verify checksum over [len || record_bytes].
-        let mut hasher = Crc32::new();
-        hasher.update(&len_bytes);
-        hasher.update(&record_bytes);
-        let computed_checksum = hasher.finalize();
-
-        if stored_checksum != computed_checksum {
-            error!("Checksum mismatch for record of length {}", record_len);
-            return Some(Err(WalError::ChecksumMismatch));
+        if let Err(e) = verify_crc(&[&len_bytes, &record_bytes], stored_checksum) {
+            warn!(
+                offset = self.offset,
+                len = record_len,
+                "WAL record checksum mismatch"
+            );
+            return Some(Err(e));
         }
 
         // Decode the record payload.
@@ -584,4 +606,73 @@ impl<T: WalData> Iterator for WalIter<T> {
             Err(e) => Some(Err(WalError::Encoding(e))),
         }
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Header I/O helpers
+// ------------------------------------------------------------------------------------------------
+
+/// Writes a [`WalHeader`] followed by its CRC32 checksum, then syncs.
+fn write_header<W: Write>(writer: &mut W, header: &WalHeader) -> Result<(), WalError> {
+    let header_bytes = encoding::encode_to_vec(header)?;
+    let checksum = compute_crc(&[&header_bytes]);
+
+    writer.write_all(&header_bytes)?;
+    writer.write_all(&checksum.to_le_bytes())?;
+
+    // Sync if the writer is a File (trait objects won't have sync_all, but
+    // our callers always follow up with their own sync when needed).
+    Ok(())
+}
+
+/// Reads and validates a [`WalHeader`] from the current file position.
+///
+/// Checks CRC, magic, and version. Does **not** validate `wal_seq` (the
+/// caller must do that, since the expected sequence depends on context).
+fn read_and_validate_header<R: Read>(reader: &mut R) -> Result<WalHeader, WalError> {
+    let mut header_bytes = vec![0u8; WalHeader::ENCODED_SIZE];
+    reader.read_exact(&mut header_bytes)?;
+
+    let mut checksum_bytes = [0u8; U32_SIZE];
+    reader.read_exact(&mut checksum_bytes)?;
+    let stored_checksum = u32::from_le_bytes(checksum_bytes);
+
+    verify_crc(&[&header_bytes], stored_checksum)
+        .map_err(|_| WalError::InvalidHeader("header checksum mismatch".into()))?;
+
+    let (header, _) = encoding::decode_from_slice::<WalHeader>(&header_bytes)?;
+
+    if header.magic != WalHeader::MAGIC {
+        return Err(WalError::InvalidHeader("bad magic".into()));
+    }
+    if header.version != WalHeader::VERSION {
+        return Err(WalError::InvalidHeader(format!(
+            "unsupported version {}",
+            header.version
+        )));
+    }
+
+    Ok(header)
+}
+
+// ------------------------------------------------------------------------------------------------
+// CRC helpers
+// ------------------------------------------------------------------------------------------------
+
+/// Computes a CRC32 checksum over one or more byte slices.
+fn compute_crc(parts: &[&[u8]]) -> u32 {
+    let mut hasher = Crc32::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    hasher.finalize()
+}
+
+/// Verifies that the CRC32 over the given byte slices matches `expected`.
+fn verify_crc(parts: &[&[u8]], expected: u32) -> Result<(), WalError> {
+    let computed = compute_crc(parts);
+    if computed != expected {
+        return Err(WalError::ChecksumMismatch);
+    }
+    Ok(())
 }

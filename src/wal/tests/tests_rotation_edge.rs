@@ -46,7 +46,7 @@ mod tests {
             for j in 0..records_per_segment {
                 wal.append(&(j as u64)).unwrap();
             }
-            if wal.header.wal_seq < rotations as u64 {
+            if wal.wal_seq() < rotations as u64 {
                 wal.rotate_next().unwrap();
             }
         }
@@ -199,12 +199,13 @@ mod tests {
         let path = tmp.path().join("wal-000000.log");
         let custom_max = 512u32;
         let mut wal: Wal<u64> = Wal::open(&path, Some(custom_max)).unwrap();
-        assert_eq!(wal.header.max_record_size, custom_max);
+        assert_eq!(wal.max_record_size(), custom_max);
 
         for _ in 0..5 {
             wal.rotate_next().unwrap();
             assert_eq!(
-                wal.header.max_record_size, custom_max,
+                wal.max_record_size(),
+                custom_max,
                 "max_record_size must be preserved across rotation"
             );
         }
@@ -212,6 +213,6 @@ mod tests {
         // Reopen last segment and verify.
         let last_path = tmp.path().join("wal-000005.log");
         let reader: Wal<u64> = Wal::open(&last_path, None).unwrap();
-        assert_eq!(reader.header.max_record_size, custom_max);
+        assert_eq!(reader.max_record_size(), custom_max);
     }
 }

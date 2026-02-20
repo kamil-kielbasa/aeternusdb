@@ -45,11 +45,11 @@ mod tests {
         let path = tmp.path().join("wal-000000.log");
         let mut wal: Wal<u64> = Wal::open(&path, None).unwrap();
 
-        let seq1 = wal.header.wal_seq;
+        let seq1 = wal.wal_seq();
         let seq2 = wal.rotate_next().expect("rotate failed");
 
         assert_eq!(seq2, seq1 + 1);
-        assert_eq!(wal.header.wal_seq, seq1 + 1);
+        assert_eq!(wal.wal_seq(), seq1 + 1);
 
         let mut files: Vec<String> = fs::read_dir(tmp.path())
             .unwrap()
@@ -179,7 +179,7 @@ mod tests {
 
         let original_path = tmp.path().join("wal-000000.log");
         let wal: Wal<u64> = Wal::open(&original_path, None).unwrap();
-        let original_seq = wal.header.wal_seq;
+        let original_seq = wal.wal_seq();
         assert_eq!(original_seq, 0);
 
         let renamed_path = tmp.path().join("wal-000005.log");

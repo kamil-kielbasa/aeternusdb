@@ -62,7 +62,7 @@ mod tests {
 
         let err = Wal::<MemTableRecord>::open(&path, None).unwrap_err();
         assert!(matches!(err, WalError::InvalidHeader(_)));
-        assert!(err.to_string().contains("Header checksum mismatch"));
+        assert!(err.to_string().contains("header checksum mismatch"));
     }
 
     // ----------------------------------------------------------------

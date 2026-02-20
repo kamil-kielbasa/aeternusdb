@@ -292,13 +292,7 @@ impl Engine {
         // We use wal_seq rather than creation_timestamp because on crash
         // recovery all frozen are replayed at nearly the same instant,
         // making timestamps unreliable for ordering.
-        frozen_memtables.sort_by(|a, b| {
-            b.memtable
-                .wal
-                .header
-                .wal_seq
-                .cmp(&a.memtable.wal.header.wal_seq)
-        });
+        frozen_memtables.sort_by(|a, b| b.memtable.wal.wal_seq().cmp(&a.memtable.wal.wal_seq()));
 
         // Sort SSTables by max_lsn descending.  This lets get()
         // early-terminate: once we find a result at LSN L, any SSTable
@@ -585,7 +579,7 @@ impl Engine {
     /// Freeze the current active memtable and swap in a fresh one.
     /// The old memtable is pushed to the front of `inner.frozen`.
     fn freeze_active(inner: &mut EngineInner) -> Result<(), EngineError> {
-        let frozen_wal_id = inner.active.wal.header.wal_seq;
+        let frozen_wal_id = inner.active.wal.wal_seq();
         let current_max_lsn = inner.active.max_lsn();
         let new_active_wal_id = frozen_wal_id + 1;
 
@@ -663,7 +657,7 @@ impl Engine {
             .frozen
             .pop()
             .ok_or_else(|| EngineError::Internal("frozen list became empty unexpectedly".into()))?;
-        let frozen_wal_id = frozen.memtable.wal.header.wal_seq;
+        let frozen_wal_id = frozen.memtable.wal.wal_seq();
 
         // Get all records from the frozen memtable
         let records: Vec<_> = frozen.iter_for_flush()?.collect();
