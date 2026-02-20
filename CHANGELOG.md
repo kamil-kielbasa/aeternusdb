@@ -4,6 +4,11 @@ All notable changes to AeternusDB are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-02-20
+
+### Fixed
+- Removed unused test helper functions (`count_files_with_ext`, `rdel`) and stale `std::fs` import flagged by clippy.
+
 ## [1.0.0] — 2025-02-20
 
 ### Changed

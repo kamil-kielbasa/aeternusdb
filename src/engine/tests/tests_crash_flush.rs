@@ -22,22 +22,9 @@
 mod tests {
     use crate::engine::tests::helpers::*;
     use crate::engine::{Engine, SSTABLE_DIR};
-    use std::fs::{self, File};
+    use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
-
-    // ----------------------------------------------------------------
-    // Helpers
-    // ----------------------------------------------------------------
-
-    /// Count files in a directory matching a given extension.
-    fn count_files_with_ext(dir: &std::path::Path, ext: &str) -> usize {
-        fs::read_dir(dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some(ext))
-            .count()
-    }
 
     // ================================================================
     // 1. Leftover .tmp file — crash before rename

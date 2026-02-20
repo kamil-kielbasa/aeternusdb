@@ -41,15 +41,6 @@ mod tests {
         }
     }
 
-    fn rdel(start: &[u8], end: &[u8], lsn: u64, timestamp: u64) -> RangeTombstone {
-        RangeTombstone {
-            start: start.to_vec(),
-            end: end.to_vec(),
-            lsn,
-            timestamp,
-        }
-    }
-
     // ----------------------------------------------------------------
     // get() for nonexistent key
     // ----------------------------------------------------------------
