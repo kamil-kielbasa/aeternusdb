@@ -64,6 +64,12 @@
         <h2>Criterion.rs Benchmark Index</h2>
         See individual benchmark pages below for more details.
         <ul>
+            <li><a href="../close/report/index.html">close</a></li>
+            
+            <ul>
+                <li><a href="../close/empty/report/index.html">empty</a></li>
+                <li><a href="../close/with_data/report/index.html">with_data</a></li>
+            </ul>
             <li><a href="../compaction/report/index.html">compaction</a></li>
             
             <ul>
@@ -84,6 +90,67 @@
                     </table>
                 </li>
             </ul>
+            <li><a href="../concurrent/report/index.html">concurrent</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../concurrent/read_under_write/report/index.html">read_under_write</a></th>
+                            <th><a href="../concurrent/readers/report/index.html">readers</a></th>
+                        </tr>
+                        <tr>
+                            <th>1</th>
+                            <td><a href="../concurrent/readers/1/report/index.html">concurrent/readers/1</a></td>
+                        </tr>
+                        <tr>
+                            <th>1_writer</th>
+                            <td><a href="../concurrent/read_under_write/1_writer/report/index.html">concurrent/read_under_write/1_writer</a></td>
+                        </tr>
+                        <tr>
+                            <th>2</th>
+                            <td><a href="../concurrent/readers/2/report/index.html">concurrent/readers/2</a></td>
+                        </tr>
+                        <tr>
+                            <th>2_writer</th>
+                            <td><a href="../concurrent/read_under_write/2_writer/report/index.html">concurrent/read_under_write/2_writer</a></td>
+                        </tr>
+                        <tr>
+                            <th>4</th>
+                            <td><a href="../concurrent/readers/4/report/index.html">concurrent/readers/4</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../dataset_scaling/report/index.html">dataset_scaling</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../dataset_scaling/get/report/index.html">get</a></th>
+                        </tr>
+                        <tr>
+                            <th>100K</th>
+                            <td><a href="../dataset_scaling/get/100K/report/index.html">dataset_scaling/get/100K</a></td>
+                        </tr>
+                        <tr>
+                            <th>10K</th>
+                            <td><a href="../dataset_scaling/get/10K/report/index.html">dataset_scaling/get/10K</a></td>
+                        </tr>
+                        <tr>
+                            <th>1K</th>
+                            <td><a href="../dataset_scaling/get/1K/report/index.html">dataset_scaling/get/1K</a></td>
+                        </tr>
+                        <tr>
+                            <th>50K</th>
+                            <td><a href="../dataset_scaling/get/50K/report/index.html">dataset_scaling/get/50K</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
             <li><a href="../delete/report/index.html">delete</a></li>
             
             <ul>
@@ -97,6 +164,45 @@
                 <li><a href="../get/memtable_miss/report/index.html">memtable_miss</a></li>
                 <li><a href="../get/sstable_hit/report/index.html">sstable_hit</a></li>
                 <li><a href="../get/sstable_miss/report/index.html">sstable_miss</a></li>
+            </ul>
+            <li><a href="../key_size/report/index.html">key_size</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../key_size/get/report/index.html">get</a></th>
+                            <th><a href="../key_size/put/report/index.html">put</a></th>
+                        </tr>
+                        <tr>
+                            <th><a href="../key_size/16B/report/index.html">16B</a></th>
+                            <td><a href="../key_size/get/16B/report/index.html">key_size/get/16B</a></td>
+                            <td><a href="../key_size/put/16B/report/index.html">key_size/put/16B</a></td>
+                        </tr>
+                        <tr>
+                            <th><a href="../key_size/256B/report/index.html">256B</a></th>
+                            <td><a href="../key_size/get/256B/report/index.html">key_size/get/256B</a></td>
+                            <td><a href="../key_size/put/256B/report/index.html">key_size/put/256B</a></td>
+                        </tr>
+                        <tr>
+                            <th><a href="../key_size/512B/report/index.html">512B</a></th>
+                            <td><a href="../key_size/get/512B/report/index.html">key_size/get/512B</a></td>
+                            <td><a href="../key_size/put/512B/report/index.html">key_size/put/512B</a></td>
+                        </tr>
+                        <tr>
+                            <th><a href="../key_size/64B/report/index.html">64B</a></th>
+                            <td><a href="../key_size/get/64B/report/index.html">key_size/get/64B</a></td>
+                            <td><a href="../key_size/put/64B/report/index.html">key_size/put/64B</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../overwrite/report/index.html">overwrite</a></li>
+            
+            <ul>
+                <li><a href="../overwrite/update_memtable/report/index.html">update_memtable</a></li>
+                <li><a href="../overwrite/update_sstable/report/index.html">update_sstable</a></li>
             </ul>
             <li><a href="../put/report/index.html">put</a></li>
             
@@ -148,6 +254,34 @@
                             <th><a href="../scan/10_keys/report/index.html">10_keys</a></th>
                             <td><a href="../scan/memtable/10_keys/report/index.html">scan/memtable/10_keys</a></td>
                             <td><a href="../scan/sstable/10_keys/report/index.html">scan/sstable/10_keys</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../tombstone_scan/report/index.html">tombstone_scan</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../tombstone_scan/dense_tombstones/report/index.html">dense_tombstones</a></th>
+                        </tr>
+                        <tr>
+                            <th>0%</th>
+                            <td><a href="../tombstone_scan/dense_tombstones/0%/report/index.html">tombstone_scan/dense_tombstones/0%</a></td>
+                        </tr>
+                        <tr>
+                            <th>25%</th>
+                            <td><a href="../tombstone_scan/dense_tombstones/25%/report/index.html">tombstone_scan/dense_tombstones/25%</a></td>
+                        </tr>
+                        <tr>
+                            <th>50%</th>
+                            <td><a href="../tombstone_scan/dense_tombstones/50%/report/index.html">tombstone_scan/dense_tombstones/50%</a></td>
+                        </tr>
+                        <tr>
+                            <th>75%</th>
+                            <td><a href="../tombstone_scan/dense_tombstones/75%/report/index.html">tombstone_scan/dense_tombstones/75%</a></td>
                         </tr>
                     </table>
                 </li>
