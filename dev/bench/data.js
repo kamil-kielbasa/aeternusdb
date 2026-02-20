@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771577959663,
+  "lastUpdate": 1771578867192,
   "repoUrl": "https://github.com/kamil-kielbasa/aeternusdb",
   "entries": {
     "AeternusDB Benchmarks": [
@@ -407,6 +407,210 @@ window.BENCHMARK_DATA = {
             "name": "ycsb/workload/F_50read_50rmw",
             "value": 713289413,
             "range": "± 17763668",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "kamkie1996@gmail.com",
+            "name": "Kamil Kielbasa",
+            "username": "kamil-kielbasa"
+          },
+          "committer": {
+            "email": "kamkie1996@gmail.com",
+            "name": "Kamil Kielbasa",
+            "username": "kamil-kielbasa"
+          },
+          "distinct": true,
+          "id": "6d77205b154db1dae49cf235ea5ceb852b0493c4",
+          "message": "chore: hardening",
+          "timestamp": "2026-02-20T09:55:26+01:00",
+          "tree_id": "8558c68636679d3fe0c6271604ead84cec33b423",
+          "url": "https://github.com/kamil-kielbasa/aeternusdb/commit/6d77205b154db1dae49cf235ea5ceb852b0493c4"
+        },
+        "date": 1771578866059,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "put/memtable_only/128B",
+            "value": 358750,
+            "range": "± 45925",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "put/memtable_only/1K",
+            "value": 322234,
+            "range": "± 41063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "put/sequential_with_flush",
+            "value": 357641,
+            "range": "± 45266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/memtable_hit",
+            "value": 258,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/memtable_miss",
+            "value": 263,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/sstable_hit",
+            "value": 2280,
+            "range": "± 65",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "get/sstable_miss",
+            "value": 1652,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "delete/point",
+            "value": 382438,
+            "range": "± 70170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "delete/range",
+            "value": 454493,
+            "range": "± 60826",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/memtable/10_keys",
+            "value": 2146,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/memtable/100_keys",
+            "value": 15960,
+            "range": "± 216",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/memtable/1000_keys",
+            "value": 154150,
+            "range": "± 2348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/sstable/10_keys",
+            "value": 10811,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/sstable/100_keys",
+            "value": 30051,
+            "range": "± 247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scan/sstable/1000_keys",
+            "value": 202757,
+            "range": "± 2428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compaction/major/1000",
+            "value": 8197561,
+            "range": "± 810784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compaction/major/5000",
+            "value": 15846369,
+            "range": "± 732732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "recovery/open_existing/1000",
+            "value": 2240178,
+            "range": "± 72143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "recovery/open_existing/10000",
+            "value": 2244930,
+            "range": "± 123801",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/64B",
+            "value": 424723,
+            "range": "± 56645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/256B",
+            "value": 427303,
+            "range": "± 50088",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/1K",
+            "value": 421750,
+            "range": "± 55184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "value_size/put/4K",
+            "value": 445129,
+            "range": "± 69107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/load/sequential/10000",
+            "value": 4413445446,
+            "range": "± 102509781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/A_50read_50update",
+            "value": 1024304514,
+            "range": "± 106649286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/B_95read_5update",
+            "value": 116140959,
+            "range": "± 17366645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/C_100read",
+            "value": 25158707,
+            "range": "± 4420290",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/D_95read_5insert",
+            "value": 125349578,
+            "range": "± 14863572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/E_95scan_5insert",
+            "value": 193632234,
+            "range": "± 14569979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ycsb/workload/F_50read_50rmw",
+            "value": 1196441168,
+            "range": "± 123291750",
             "unit": "ns/iter"
           }
         ]
