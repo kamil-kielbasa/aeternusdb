@@ -101,7 +101,7 @@
 <a href=#101 id=101 data-nosnippet>101</a>        SSTablePropertiesBlock {
 <a href=#102 id=102 data-nosnippet>102</a>            creation_timestamp: SystemTime::now()
 <a href=#103 id=103 data-nosnippet>103</a>                .duration_since(UNIX_EPOCH)
-<a href=#104 id=104 data-nosnippet>104</a>                .expect(<span class="string">"system clock before UNIX epoch"</span>)
+<a href=#104 id=104 data-nosnippet>104</a>                .unwrap_or_default()
 <a href=#105 id=105 data-nosnippet>105</a>                .as_nanos() <span class="kw">as </span>u64,
 <a href=#106 id=106 data-nosnippet>106</a>            record_count: <span class="self">self</span>.record_count,
 <a href=#107 id=107 data-nosnippet>107</a>            tombstone_count: <span class="self">self</span>.tombstone_count,

@@ -314,8 +314,8 @@
 <a href=#314 id=314 data-nosnippet>314</a>            <span class="comment">// Resolve the false positive via actual get().
 <a href=#315 id=315 data-nosnippet>315</a>            </span><span class="kw">let </span>result = sst.get(key)<span class="question-mark">?</span>;
 <a href=#316 id=316 data-nosnippet>316</a>            <span class="kw">match </span>result {
-<a href=#317 id=317 data-nosnippet>317</a>                GetResult::NotFound =&gt; <span class="kw">continue</span>, <span class="comment">// false positive → safe
-<a href=#318 id=318 data-nosnippet>318</a>                </span><span class="kw">_ </span>=&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(<span class="bool-val">false</span>),           <span class="comment">// actually present → keep tombstone
+<a href=#317 id=317 data-nosnippet>317</a>                GetResult::NotFound =&gt; {} <span class="comment">// false positive → safe
+<a href=#318 id=318 data-nosnippet>318</a>                </span><span class="kw">_ </span>=&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(<span class="bool-val">false</span>),    <span class="comment">// actually present → keep tombstone
 <a href=#319 id=319 data-nosnippet>319</a>            </span>}
 <a href=#320 id=320 data-nosnippet>320</a>        } <span class="kw">else </span>{
 <a href=#321 id=321 data-nosnippet>321</a>            <span class="comment">// Without fallback scan, we must conservatively keep the tombstone.

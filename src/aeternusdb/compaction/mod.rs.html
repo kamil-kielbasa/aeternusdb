@@ -236,15 +236,15 @@
 <a href=#236 id=236 data-nosnippet>236</a>        .iter()
 <a href=#237 id=237 data-nosnippet>237</a>        .map(|s| <span class="kw-2">&amp;</span>s.properties.min_key)
 <a href=#238 id=238 data-nosnippet>238</a>        .min()
-<a href=#239 id=239 data-nosnippet>239</a>        .unwrap()
-<a href=#240 id=240 data-nosnippet>240</a>        .clone();
+<a href=#239 id=239 data-nosnippet>239</a>        .ok_or_else(|| SSTableError::Internal(<span class="string">"empty sstables in full_range_scan"</span>.into()))<span class="question-mark">?
+<a href=#240 id=240 data-nosnippet>240</a>        </span>.clone();
 <a href=#241 id=241 data-nosnippet>241</a>
 <a href=#242 id=242 data-nosnippet>242</a>    <span class="kw">let </span><span class="kw-2">mut </span>max_key = sstables
 <a href=#243 id=243 data-nosnippet>243</a>        .iter()
 <a href=#244 id=244 data-nosnippet>244</a>        .map(|s| <span class="kw-2">&amp;</span>s.properties.max_key)
 <a href=#245 id=245 data-nosnippet>245</a>        .max()
-<a href=#246 id=246 data-nosnippet>246</a>        .unwrap()
-<a href=#247 id=247 data-nosnippet>247</a>        .clone();
+<a href=#246 id=246 data-nosnippet>246</a>        .ok_or_else(|| SSTableError::Internal(<span class="string">"empty sstables in full_range_scan"</span>.into()))<span class="question-mark">?
+<a href=#247 id=247 data-nosnippet>247</a>        </span>.clone();
 <a href=#248 id=248 data-nosnippet>248</a>    <span class="comment">// Extend max_key past the actual max key to make it exclusive.
 <a href=#249 id=249 data-nosnippet>249</a>    </span>max_key.push(<span class="number">0xFF</span>);
 <a href=#250 id=250 data-nosnippet>250</a>
@@ -307,57 +307,61 @@
 <a href=#307 id=307 data-nosnippet>307</a>
 <a href=#308 id=308 data-nosnippet>308</a>        <span class="kw">for </span>id <span class="kw">in </span><span class="kw-2">&amp;</span>removed_ids {
 <a href=#309 id=309 data-nosnippet>309</a>            <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, id);
-<a href=#310 id=310 data-nosnippet>310</a>            <span class="kw">let _ </span>= fs::remove_file(<span class="kw-2">&amp;</span>path);
-<a href=#311 id=311 data-nosnippet>311</a>        }
-<a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">return </span><span class="prelude-val">Ok</span>(CompactionResult {
-<a href=#314 id=314 data-nosnippet>314</a>            removed_ids,
-<a href=#315 id=315 data-nosnippet>315</a>            new_sst_path: <span class="prelude-val">None</span>,
-<a href=#316 id=316 data-nosnippet>316</a>            new_sst_id: <span class="prelude-val">None</span>,
-<a href=#317 id=317 data-nosnippet>317</a>        });
-<a href=#318 id=318 data-nosnippet>318</a>    }
-<a href=#319 id=319 data-nosnippet>319</a>
-<a href=#320 id=320 data-nosnippet>320</a>    <span class="comment">// Build new SSTable.
-<a href=#321 id=321 data-nosnippet>321</a>    </span><span class="kw">let </span>new_sst_id = manifest.allocate_sst_id()<span class="question-mark">?</span>;
-<a href=#322 id=322 data-nosnippet>322</a>    <span class="kw">let </span>new_sst_path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, new_sst_id);
-<a href=#323 id=323 data-nosnippet>323</a>
-<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">let </span>point_count = point_entries.len();
-<a href=#325 id=325 data-nosnippet>325</a>    <span class="kw">let </span>range_count = range_tombstones.len();
-<a href=#326 id=326 data-nosnippet>326</a>
-<a href=#327 id=327 data-nosnippet>327</a>    <span class="macro">debug!</span>(
-<a href=#328 id=328 data-nosnippet>328</a>        new_sst_id,
-<a href=#329 id=329 data-nosnippet>329</a>        point_count,
-<a href=#330 id=330 data-nosnippet>330</a>        range_count,
-<a href=#331 id=331 data-nosnippet>331</a>        removed_count = removed_ids.len(),
-<a href=#332 id=332 data-nosnippet>332</a>        path = %new_sst_path,
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="string">"finalize: building new SSTable"
-<a href=#334 id=334 data-nosnippet>334</a>    </span>);
-<a href=#335 id=335 data-nosnippet>335</a>
-<a href=#336 id=336 data-nosnippet>336</a>    sstable::SstWriter::new(<span class="kw-2">&amp;</span>new_sst_path).build(
-<a href=#337 id=337 data-nosnippet>337</a>        point_entries.into_iter(),
-<a href=#338 id=338 data-nosnippet>338</a>        point_count,
-<a href=#339 id=339 data-nosnippet>339</a>        range_tombstones.into_iter(),
-<a href=#340 id=340 data-nosnippet>340</a>        range_count,
-<a href=#341 id=341 data-nosnippet>341</a>    )<span class="question-mark">?</span>;
-<a href=#342 id=342 data-nosnippet>342</a>
-<a href=#343 id=343 data-nosnippet>343</a>    <span class="comment">// Atomic manifest update: add new, remove old.
-<a href=#344 id=344 data-nosnippet>344</a>    </span><span class="kw">let </span>new_entry = ManifestSstEntry {
-<a href=#345 id=345 data-nosnippet>345</a>        id: new_sst_id,
-<a href=#346 id=346 data-nosnippet>346</a>        path: PathBuf::from(<span class="kw-2">&amp;</span>new_sst_path),
-<a href=#347 id=347 data-nosnippet>347</a>    };
-<a href=#348 id=348 data-nosnippet>348</a>    manifest.apply_compaction(<span class="macro">vec!</span>[new_entry], removed_ids.clone())<span class="question-mark">?</span>;
-<a href=#349 id=349 data-nosnippet>349</a>    manifest.checkpoint()<span class="question-mark">?</span>;
-<a href=#350 id=350 data-nosnippet>350</a>
-<a href=#351 id=351 data-nosnippet>351</a>    <span class="comment">// Delete old SSTable files.
-<a href=#352 id=352 data-nosnippet>352</a>    </span><span class="kw">for </span>id <span class="kw">in </span><span class="kw-2">&amp;</span>removed_ids {
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, id);
-<a href=#354 id=354 data-nosnippet>354</a>        <span class="kw">let _ </span>= fs::remove_file(<span class="kw-2">&amp;</span>path);
-<a href=#355 id=355 data-nosnippet>355</a>    }
-<a href=#356 id=356 data-nosnippet>356</a>
-<a href=#357 id=357 data-nosnippet>357</a>    <span class="prelude-val">Ok</span>(CompactionResult {
-<a href=#358 id=358 data-nosnippet>358</a>        removed_ids,
-<a href=#359 id=359 data-nosnippet>359</a>        new_sst_path: <span class="prelude-val">Some</span>(new_sst_path),
-<a href=#360 id=360 data-nosnippet>360</a>        new_sst_id: <span class="prelude-val">Some</span>(new_sst_id),
-<a href=#361 id=361 data-nosnippet>361</a>    })
-<a href=#362 id=362 data-nosnippet>362</a>}
+<a href=#310 id=310 data-nosnippet>310</a>            <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = fs::remove_file(<span class="kw-2">&amp;</span>path) {
+<a href=#311 id=311 data-nosnippet>311</a>                <span class="macro">tracing::warn!</span>(id, %e, <span class="string">"failed to remove old SSTable file during compaction"</span>);
+<a href=#312 id=312 data-nosnippet>312</a>            }
+<a href=#313 id=313 data-nosnippet>313</a>        }
+<a href=#314 id=314 data-nosnippet>314</a>
+<a href=#315 id=315 data-nosnippet>315</a>        <span class="kw">return </span><span class="prelude-val">Ok</span>(CompactionResult {
+<a href=#316 id=316 data-nosnippet>316</a>            removed_ids,
+<a href=#317 id=317 data-nosnippet>317</a>            new_sst_path: <span class="prelude-val">None</span>,
+<a href=#318 id=318 data-nosnippet>318</a>            new_sst_id: <span class="prelude-val">None</span>,
+<a href=#319 id=319 data-nosnippet>319</a>        });
+<a href=#320 id=320 data-nosnippet>320</a>    }
+<a href=#321 id=321 data-nosnippet>321</a>
+<a href=#322 id=322 data-nosnippet>322</a>    <span class="comment">// Build new SSTable.
+<a href=#323 id=323 data-nosnippet>323</a>    </span><span class="kw">let </span>new_sst_id = manifest.allocate_sst_id()<span class="question-mark">?</span>;
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">let </span>new_sst_path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, new_sst_id);
+<a href=#325 id=325 data-nosnippet>325</a>
+<a href=#326 id=326 data-nosnippet>326</a>    <span class="kw">let </span>point_count = point_entries.len();
+<a href=#327 id=327 data-nosnippet>327</a>    <span class="kw">let </span>range_count = range_tombstones.len();
+<a href=#328 id=328 data-nosnippet>328</a>
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="macro">debug!</span>(
+<a href=#330 id=330 data-nosnippet>330</a>        new_sst_id,
+<a href=#331 id=331 data-nosnippet>331</a>        point_count,
+<a href=#332 id=332 data-nosnippet>332</a>        range_count,
+<a href=#333 id=333 data-nosnippet>333</a>        removed_count = removed_ids.len(),
+<a href=#334 id=334 data-nosnippet>334</a>        path = %new_sst_path,
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="string">"finalize: building new SSTable"
+<a href=#336 id=336 data-nosnippet>336</a>    </span>);
+<a href=#337 id=337 data-nosnippet>337</a>
+<a href=#338 id=338 data-nosnippet>338</a>    sstable::SstWriter::new(<span class="kw-2">&amp;</span>new_sst_path).build(
+<a href=#339 id=339 data-nosnippet>339</a>        point_entries.into_iter(),
+<a href=#340 id=340 data-nosnippet>340</a>        point_count,
+<a href=#341 id=341 data-nosnippet>341</a>        range_tombstones.into_iter(),
+<a href=#342 id=342 data-nosnippet>342</a>        range_count,
+<a href=#343 id=343 data-nosnippet>343</a>    )<span class="question-mark">?</span>;
+<a href=#344 id=344 data-nosnippet>344</a>
+<a href=#345 id=345 data-nosnippet>345</a>    <span class="comment">// Atomic manifest update: add new, remove old.
+<a href=#346 id=346 data-nosnippet>346</a>    </span><span class="kw">let </span>new_entry = ManifestSstEntry {
+<a href=#347 id=347 data-nosnippet>347</a>        id: new_sst_id,
+<a href=#348 id=348 data-nosnippet>348</a>        path: PathBuf::from(<span class="kw-2">&amp;</span>new_sst_path),
+<a href=#349 id=349 data-nosnippet>349</a>    };
+<a href=#350 id=350 data-nosnippet>350</a>    manifest.apply_compaction(<span class="macro">vec!</span>[new_entry], removed_ids.clone())<span class="question-mark">?</span>;
+<a href=#351 id=351 data-nosnippet>351</a>    manifest.checkpoint()<span class="question-mark">?</span>;
+<a href=#352 id=352 data-nosnippet>352</a>
+<a href=#353 id=353 data-nosnippet>353</a>    <span class="comment">// Delete old SSTable files.
+<a href=#354 id=354 data-nosnippet>354</a>    </span><span class="kw">for </span>id <span class="kw">in </span><span class="kw-2">&amp;</span>removed_ids {
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="kw">let </span>path = <span class="macro">format!</span>(<span class="string">"{}/{}/sstable-{}.sst"</span>, data_dir, SSTABLE_DIR, id);
+<a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = fs::remove_file(<span class="kw-2">&amp;</span>path) {
+<a href=#357 id=357 data-nosnippet>357</a>            <span class="macro">tracing::warn!</span>(id, %e, <span class="string">"failed to remove old SSTable file during compaction"</span>);
+<a href=#358 id=358 data-nosnippet>358</a>        }
+<a href=#359 id=359 data-nosnippet>359</a>    }
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a>    <span class="prelude-val">Ok</span>(CompactionResult {
+<a href=#362 id=362 data-nosnippet>362</a>        removed_ids,
+<a href=#363 id=363 data-nosnippet>363</a>        new_sst_path: <span class="prelude-val">Some</span>(new_sst_path),
+<a href=#364 id=364 data-nosnippet>364</a>        new_sst_id: <span class="prelude-val">Some</span>(new_sst_id),
+<a href=#365 id=365 data-nosnippet>365</a>    })
+<a href=#366 id=366 data-nosnippet>366</a>}
 </code></pre></div></section></main></body></html>
