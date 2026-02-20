@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Index - Criterion.rs</title>
+    <style type="text/css">
+        body {
+            font: 14px Helvetica Neue;
+            text-rendering: optimizelegibility;
+        }
+
+        .body {
+            width: 960px;
+            margin: auto;
+        }
+
+        a:link {
+            color: #1F78B4;
+            text-decoration: none;
+        }
+
+        h2 {
+            font-size: 36px;
+            font-weight: 300;
+        }
+
+        h3 {
+            font-size: 24px;
+            font-weight: 300;
+        }
+
+        #footer {
+            height: 40px;
+            background: #888;
+            color: white;
+            font-size: larger;
+            font-weight: 300;
+        }
+
+        #footer a {
+            color: white;
+            text-decoration: underline;
+        }
+
+        #footer p {
+            text-align: center
+        }
+
+        table {
+            border-collapse: collapse;
+        }
+
+        table,
+        th,
+        td {
+            border: 1px solid #888;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="body">
+        <h2>Criterion.rs Benchmark Index</h2>
+        See individual benchmark pages below for more details.
+        <ul>
+            <li><a href="../compaction/report/index.html">compaction</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../compaction/major/report/index.html">major</a></th>
+                        </tr>
+                        <tr>
+                            <th>1000</th>
+                            <td><a href="../compaction/major/1000/report/index.html">compaction/major/1000</a></td>
+                        </tr>
+                        <tr>
+                            <th>5000</th>
+                            <td><a href="../compaction/major/5000/report/index.html">compaction/major/5000</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../delete/report/index.html">delete</a></li>
+            
+            <ul>
+                <li><a href="../delete/point/report/index.html">point</a></li>
+                <li><a href="../delete/range/report/index.html">range</a></li>
+            </ul>
+            <li><a href="../get/report/index.html">get</a></li>
+            
+            <ul>
+                <li><a href="../get/memtable_hit/report/index.html">memtable_hit</a></li>
+                <li><a href="../get/memtable_miss/report/index.html">memtable_miss</a></li>
+                <li><a href="../get/sstable_hit/report/index.html">sstable_hit</a></li>
+                <li><a href="../get/sstable_miss/report/index.html">sstable_miss</a></li>
+            </ul>
+            <li><a href="../put/report/index.html">put</a></li>
+            
+            <ul>
+                <li><a href="../put/memtable_only/report/index.html">memtable_only</a></li>
+                <li><a href="../put/sequential_with_flush/report/index.html">sequential_with_flush</a></li>
+            </ul>
+            <li><a href="../recovery/report/index.html">recovery</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../recovery/open_existing/report/index.html">open_existing</a></th>
+                        </tr>
+                        <tr>
+                            <th>1000</th>
+                            <td><a href="../recovery/open_existing/1000/report/index.html">recovery/open_existing/1000</a></td>
+                        </tr>
+                        <tr>
+                            <th>10000</th>
+                            <td><a href="../recovery/open_existing/10000/report/index.html">recovery/open_existing/10000</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../scan/report/index.html">scan</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../scan/memtable/report/index.html">memtable</a></th>
+                            <th><a href="../scan/sstable/report/index.html">sstable</a></th>
+                        </tr>
+                        <tr>
+                            <th><a href="../scan/1000_keys/report/index.html">1000_keys</a></th>
+                            <td><a href="../scan/memtable/1000_keys/report/index.html">scan/memtable/1000_keys</a></td>
+                            <td><a href="../scan/sstable/1000_keys/report/index.html">scan/sstable/1000_keys</a></td>
+                        </tr>
+                        <tr>
+                            <th><a href="../scan/100_keys/report/index.html">100_keys</a></th>
+                            <td><a href="../scan/memtable/100_keys/report/index.html">scan/memtable/100_keys</a></td>
+                            <td><a href="../scan/sstable/100_keys/report/index.html">scan/sstable/100_keys</a></td>
+                        </tr>
+                        <tr>
+                            <th><a href="../scan/10_keys/report/index.html">10_keys</a></th>
+                            <td><a href="../scan/memtable/10_keys/report/index.html">scan/memtable/10_keys</a></td>
+                            <td><a href="../scan/sstable/10_keys/report/index.html">scan/sstable/10_keys</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../value_size/report/index.html">value_size</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../value_size/put/report/index.html">put</a></th>
+                        </tr>
+                        <tr>
+                            <th>1K</th>
+                            <td><a href="../value_size/put/1K/report/index.html">value_size/put/1K</a></td>
+                        </tr>
+                        <tr>
+                            <th>256B</th>
+                            <td><a href="../value_size/put/256B/report/index.html">value_size/put/256B</a></td>
+                        </tr>
+                        <tr>
+                            <th>4K</th>
+                            <td><a href="../value_size/put/4K/report/index.html">value_size/put/4K</a></td>
+                        </tr>
+                        <tr>
+                            <th>64B</th>
+                            <td><a href="../value_size/put/64B/report/index.html">value_size/put/64B</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li>ycsb/load</li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th>sequential</th>
+                        </tr>
+                        <tr>
+                            <th>10000</th>
+                            <td><a href="../ycsb_load/sequential/10000/report/index.html">ycsb/load/sequential/10000</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li>ycsb/workload</li>
+            
+            <ul>
+                <li><a href="../ycsb_workload/A_50read_50update/report/index.html">A_50read_50update</a></li>
+                <li><a href="../ycsb_workload/B_95read_5update/report/index.html">B_95read_5update</a></li>
+                <li><a href="../ycsb_workload/C_100read/report/index.html">C_100read</a></li>
+                <li><a href="../ycsb_workload/D_95read_5insert/report/index.html">D_95read_5insert</a></li>
+                <li><a href="../ycsb_workload/E_95scan_5insert/report/index.html">E_95scan_5insert</a></li>
+                <li><a href="../ycsb_workload/F_50read_50rmw/report/index.html">F_50read_50rmw</a></li>
+            </ul>
+        </ul>
+    </div>
+    <div id="footer">
+        <p>This report was generated by
+            <a href="https://github.com/bheisler/criterion.rs">Criterion.rs</a>, a statistics-driven benchmarking
+            library in Rust.</p>
+    </div>
+</body>
+</html>

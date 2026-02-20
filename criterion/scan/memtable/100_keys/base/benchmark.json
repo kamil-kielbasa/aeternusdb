@@ -1,0 +1,1 @@
+{"group_id":"scan","function_id":"memtable","value_str":"100_keys","throughput":{"Elements":100},"full_id":"scan/memtable/100_keys","directory_name":"scan/memtable/100_keys","title":"scan/memtable/100_keys"}
