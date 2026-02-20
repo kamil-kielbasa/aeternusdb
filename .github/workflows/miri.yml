@@ -1,0 +1,32 @@
+name: Miri
+
+on:
+  schedule:
+    - cron: "0 4 * * 6" # every Saturday 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Miri does not support file I/O fully.  Run only the memtable /
+  # in-memory tests that don't touch the filesystem.
+  MIRIFLAGS: "-Zmiri-disable-isolation"
+
+jobs:
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Run Miri on memtable tests
+        run: cargo +nightly miri test --lib "memtable::tests"
+
+      - name: Run Miri on encoding tests
+        run: cargo +nightly miri test --lib "encoding::tests"

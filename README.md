@@ -3,6 +3,8 @@
 [![CI](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/ci.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/ci.yml)
 [![Bench](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/bench.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/bench.yml)
 [![Docs](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/docs.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/docs.yml)
+[![Audit](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/audit.yml/badge.svg)](https://github.com/kamil-kielbasa/aeternusdb/actions/workflows/audit.yml)
+[![codecov](https://codecov.io/gh/kamil-kielbasa/aeternusdb/graph/badge.svg)](https://codecov.io/gh/kamil-kielbasa/aeternusdb)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An embeddable, persistent key-value storage engine built on a **Log-Structured Merge Tree (LSM-tree)** architecture. Written in pure Rust with a focus on durability, crash safety, and correctness.

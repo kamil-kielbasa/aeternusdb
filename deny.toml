@@ -1,0 +1,25 @@
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Lint level for crates that have been yanked
+yanked = "warn"
+
+[licenses]
+# Allow these license expressions
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "Unicode-3.0",
+]
+
+[bans]
+# Lint level for multiple versions of the same crate
+multiple-versions = "warn"
+# Highlight the dependency graph leading to duplicates
+wildcards = "allow"
+
+[sources]
+# Lint level for crates not from crates.io
+unknown-registry = "deny"
+unknown-git = "deny"

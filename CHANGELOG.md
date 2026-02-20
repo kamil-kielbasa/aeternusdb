@@ -99,5 +99,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - `integration_hardening` — exact boundary values accepted/rejected for all six `DbConfig` fields (`write_buffer_size`, `min_compaction_threshold`, `max_compaction_threshold`, `tombstone_compaction_ratio`, `tombstone_compaction_interval`, `thread_pool_size`); `scan` with `start == end` returns empty; `delete_range` with empty keys rejected; `major_compact` on empty DB; reopen after deleting all keys.
 
 #### CI / CD
-- GitHub Actions CI workflow — `cargo check`, `rustfmt`, `clippy`, `cargo test`.
+- GitHub Actions CI workflow — `cargo check`, `rustfmt`, `clippy`, `cargo test`, `cargo doc -D warnings`, `cargo machete`.
 - GitHub Actions documentation workflow — builds `cargo doc` and deploys to GitHub Pages.
+- GitHub Actions benchmark workflow — Criterion micro & YCSB benchmarks with historical tracking via `github-action-benchmark`, HTML reports published to GitHub Pages.
+- GitHub Actions audit workflow — `cargo deny` for dependency vulnerability scanning, license compliance, and supply chain checks (on push, PR, and weekly schedule).
+- GitHub Actions coverage workflow — `cargo-llvm-cov` with Codecov integration for line coverage tracking and PR comments.
+- GitHub Actions semver workflow — `cargo semver-checks` on pull requests to catch accidental breaking API changes.
+- GitHub Actions Miri workflow — runs memtable and encoding tests under Miri on nightly to detect undefined behavior (weekly schedule + manual dispatch).
+- `deny.toml` — cargo-deny configuration allowing MIT, Apache-2.0, ISC, and Unicode-3.0 licenses.
