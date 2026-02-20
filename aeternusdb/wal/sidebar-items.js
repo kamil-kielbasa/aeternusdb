@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["U32_SIZE"],"enum":["WalError"],"struct":["Wal","WalHeader","WalIter"],"trait":["WalData"]};
+window.SIDEBAR_ITEMS = {"constant":["U32_SIZE"],"enum":["WalError"],"fn":["compute_crc","read_and_validate_header","verify_crc","write_header"],"struct":["Wal","WalHeader","WalIter"],"trait":["WalData"]};
