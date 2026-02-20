@@ -51,7 +51,7 @@
 //!   and the manifest is updated atomically.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use thiserror::Error;
@@ -60,8 +60,11 @@ use crate::manifest::{Manifest, ManifestError, ManifestSstEntry};
 use crate::memtable::{FrozenMemtable, Memtable, MemtableError, MemtableGetResult};
 use crate::sstable::{self, SSTable, SSTableError};
 
+mod encoding_impls;
 pub mod utils;
-pub use utils::{PointEntry, RangeTombstone, Record};
+mod visibility;
+pub use utils::{PointEntry, RangeTombstone, Record, RecordEntry};
+pub use visibility::VisibilityFilter;
 
 #[cfg(test)]
 mod tests;
@@ -143,7 +146,27 @@ pub struct EngineConfig {
     pub thread_pool_size: usize,
 }
 
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            write_buffer_size: 64 * 1024,
+            compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
+            bucket_low: 0.5,
+            bucket_high: 1.5,
+            min_sstable_size: 50,
+            min_threshold: 4,
+            max_threshold: 32,
+            tombstone_ratio_threshold: 0.3,
+            tombstone_compaction_interval: 0,
+            tombstone_bloom_fallback: true,
+            tombstone_range_drop: true,
+            thread_pool_size: 2,
+        }
+    }
+}
+
 /// Snapshot of engine statistics returned by [`Engine::stats`].
+#[derive(Debug)]
 pub struct EngineStats {
     /// Number of frozen memtables pending flush.
     pub frozen_count: usize,
@@ -170,7 +193,7 @@ struct EngineInner {
     sstables: Vec<SSTable>,
 
     /// Path where engine will be mounted.
-    data_dir: String,
+    data_dir: PathBuf,
 
     /// A short config for thresholds, sizes, etc.
     config: EngineConfig,
@@ -193,6 +216,54 @@ impl Clone for Engine {
 }
 
 impl Engine {
+    // --------------------------------------------------------------------------------------------
+    // Lock helpers
+    // --------------------------------------------------------------------------------------------
+
+    /// Acquires a read lock on the engine state.
+    fn read_lock(&self) -> Result<std::sync::RwLockReadGuard<'_, EngineInner>, EngineError> {
+        self.inner
+            .read()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))
+    }
+
+    /// Acquires a write lock on the engine state.
+    fn write_lock(&self) -> Result<std::sync::RwLockWriteGuard<'_, EngineInner>, EngineError> {
+        self.inner
+            .write()
+            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Write helpers
+    // --------------------------------------------------------------------------------------------
+
+    /// Executes a memtable write operation, automatically freezing the active
+    /// memtable and retrying if the write buffer is full.
+    ///
+    /// Returns `Ok(true)` if a freeze occurred (caller should schedule a flush),
+    /// `Ok(false)` if the write succeeded without freezing.
+    fn write_with_retry(
+        inner: &mut EngineInner,
+        mut op: impl FnMut(&mut Memtable) -> Result<(), MemtableError>,
+    ) -> Result<bool, EngineError> {
+        match op(&mut inner.active) {
+            Ok(()) => Ok(false),
+            Err(MemtableError::FlushRequired) => {
+                Self::freeze_active(inner)?;
+                op(&mut inner.active)?;
+                let max_lsn = inner.active.max_lsn().unwrap_or(0);
+                inner.manifest.update_lsn(max_lsn)?;
+                Ok(true)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Lifecycle
+    // --------------------------------------------------------------------------------------------
+
     /// Opens (or creates) an engine rooted at the given directory.
     ///
     /// On a fresh directory the manifest, WAL, and SSTable sub-directories
@@ -200,39 +271,28 @@ impl Engine {
     /// replayed, frozen WALs are loaded, and SSTables are opened.
     pub fn open(path: impl AsRef<Path>, config: EngineConfig) -> Result<Self, EngineError> {
         // 0. Create necessary directories
-        let path_str = path.as_ref().to_string_lossy();
-        let manifest_dir = format!("{}/{}", path_str, MANIFEST_DIR);
-        let memtable_dir = format!("{}/{}", path_str, MEMTABLE_DIR);
-        let sstable_dir = format!("{}/{}", path_str, SSTABLE_DIR);
+        let base = path.as_ref();
+        let manifest_dir = base.join(MANIFEST_DIR);
+        let memtable_dir = base.join(MEMTABLE_DIR);
+        let sstable_dir = base.join(SSTABLE_DIR);
 
         fs::create_dir_all(&manifest_dir)?;
         fs::create_dir_all(&memtable_dir)?;
         fs::create_dir_all(&sstable_dir)?;
 
         // 1. Load or create manifest.
-        let manifest_path = format!("{}/{}", path.as_ref().to_string_lossy(), MANIFEST_DIR);
-        let manifest = Manifest::open(&manifest_path)?;
+        let manifest = Manifest::open(&manifest_dir)?;
         let manifest_last_lsn = manifest.get_last_lsn()?;
 
         // 2. Discover existing WAL files and load active/frozen WAL info from manifest.
         let active_wal_nr = manifest.get_active_wal()?;
-        let active_wal_path = format!(
-            "{}/{}/{:06}.log",
-            path.as_ref().to_string_lossy(),
-            MEMTABLE_DIR,
-            active_wal_nr
-        );
+        let active_wal_path = memtable_dir.join(format!("{:06}.log", active_wal_nr));
         let memtable = Memtable::new(active_wal_path, None, config.write_buffer_size)?;
 
         let frozen_wals = manifest.get_frozen_wals()?;
         let mut frozen_memtables = Vec::new();
         for wal_nr in frozen_wals {
-            let frozen_wal_path = format!(
-                "{}/{}/{:06}.log",
-                path.as_ref().to_string_lossy(),
-                MEMTABLE_DIR,
-                wal_nr
-            );
+            let frozen_wal_path = memtable_dir.join(format!("{:06}.log", wal_nr));
             let memtable = Memtable::new(frozen_wal_path, None, config.write_buffer_size)?;
             frozen_memtables.push(memtable.frozen()?);
         }
@@ -303,7 +363,7 @@ impl Engine {
             active: memtable,
             frozen: frozen_memtables,
             sstables: sstable_handles,
-            data_dir: path.as_ref().to_string_lossy().to_string(),
+            data_dir: base.to_path_buf(),
             config,
         };
 
@@ -317,10 +377,7 @@ impl Engine {
     /// Flushes all remaining frozen memtables, checkpoints the manifest,
     /// and fsyncs all directories to ensure full durability.
     pub fn close(&self) -> Result<(), EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        let mut inner = self.write_lock()?;
 
         // 1. Flush any remaining frozen memtables to SSTables
         while !inner.frozen.is_empty() {
@@ -333,9 +390,9 @@ impl Engine {
         inner.manifest.checkpoint()?;
 
         // 3. Fsync directories to ensure metadata is durable
-        let manifest_dir = format!("{}/{}", inner.data_dir, MANIFEST_DIR);
-        let memtable_dir = format!("{}/{}", inner.data_dir, MEMTABLE_DIR);
-        let sstable_dir = format!("{}/{}", inner.data_dir, SSTABLE_DIR);
+        let manifest_dir = inner.data_dir.join(MANIFEST_DIR);
+        let memtable_dir = inner.data_dir.join(MEMTABLE_DIR);
+        let sstable_dir = inner.data_dir.join(SSTABLE_DIR);
 
         // Fsync each directory
         for dir_path in [&manifest_dir, &memtable_dir, &sstable_dir] {
@@ -357,81 +414,33 @@ impl Engine {
     /// Returns `Ok(true)` if the active memtable was frozen (caller should
     /// arrange a flush), `Ok(false)` otherwise.
     pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
-
-        match inner.active.put(key.clone(), value.clone()) {
-            Ok(()) => Ok(false),
-
-            Err(MemtableError::FlushRequired) => {
-                Self::freeze_active(&mut inner)?;
-                inner.active.put(key, value)?;
-
-                let max_lsn = inner.active.max_lsn().unwrap_or(0);
-                inner.manifest.update_lsn(max_lsn)?;
-
-                Ok(true)
-            }
-
-            Err(e) => Err(e.into()),
-        }
+        let mut inner = self.write_lock()?;
+        tracing::trace!(key_len = key.len(), value_len = value.len(), "engine put");
+        Self::write_with_retry(&mut inner, |active| active.put(key.clone(), value.clone()))
     }
 
     /// Delete a key (insert a point tombstone).
     ///
     /// Returns `Ok(true)` if the active memtable was frozen, `Ok(false)` otherwise.
     pub fn delete(&self, key: Vec<u8>) -> Result<bool, EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
-
-        match inner.active.delete(key.clone()) {
-            Ok(()) => Ok(false),
-
-            Err(MemtableError::FlushRequired) => {
-                Self::freeze_active(&mut inner)?;
-                inner.active.delete(key)?;
-
-                let max_lsn = inner.active.max_lsn().unwrap_or(0);
-                inner.manifest.update_lsn(max_lsn)?;
-
-                Ok(true)
-            }
-
-            Err(e) => Err(e.into()),
-        }
+        let mut inner = self.write_lock()?;
+        tracing::trace!(key_len = key.len(), "engine delete");
+        Self::write_with_retry(&mut inner, |active| active.delete(key.clone()))
     }
 
     /// Delete all keys in `[start_key, end_key)` (insert a range tombstone).
     ///
     /// Returns `Ok(true)` if the active memtable was frozen, `Ok(false)` otherwise.
     pub fn delete_range(&self, start_key: Vec<u8>, end_key: Vec<u8>) -> Result<bool, EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
-
-        match inner
-            .active
-            .delete_range(start_key.clone(), end_key.clone())
-        {
-            Ok(()) => Ok(false),
-
-            Err(MemtableError::FlushRequired) => {
-                Self::freeze_active(&mut inner)?;
-                inner.active.delete_range(start_key, end_key)?;
-
-                let max_lsn = inner.active.max_lsn().unwrap_or(0);
-                inner.manifest.update_lsn(max_lsn)?;
-
-                Ok(true)
-            }
-
-            Err(e) => Err(e.into()),
-        }
+        let mut inner = self.write_lock()?;
+        tracing::trace!(
+            start_len = start_key.len(),
+            end_len = end_key.len(),
+            "engine delete_range"
+        );
+        Self::write_with_retry(&mut inner, |active| {
+            active.delete_range(start_key.clone(), end_key.clone())
+        })
     }
 
     /// Look up a single key.
@@ -442,10 +451,8 @@ impl Engine {
     /// The lookup order is: active memtable → frozen memtables → SSTables
     /// (all newest-first). The first definitive result wins.
     pub fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, EngineError> {
-        let inner = self
-            .inner
-            .read()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        tracing::trace!(key_len = key.len(), "engine get");
+        let inner = self.read_lock()?;
 
         // --------------------------------------------------
         // 1. Active memtable (newest)
@@ -519,33 +526,50 @@ impl Engine {
         start_key: &[u8],
         end_key: &[u8],
     ) -> Result<impl Iterator<Item = (Vec<u8>, Vec<u8>)>, EngineError> {
+        tracing::trace!(
+            start_len = start_key.len(),
+            end_len = end_key.len(),
+            "engine scan"
+        );
         let merged = self.raw_scan(start_key, end_key)?;
         Ok(VisibilityFilter::new(merged))
     }
 
+    /// Collects records from all layers into owned iterators and merges them.
+    ///
+    /// # Why `.collect()`?
+    ///
+    /// Each layer's scan iterator borrows from data behind the `RwLock`.
+    /// The lock guard (`RwLockReadGuard`) is dropped when this function
+    /// returns, which would invalidate any borrowed iterators.
+    ///
+    /// By calling `.collect()` while the guard is alive, we materialise
+    /// each layer's records into owned `Vec<Record>`s. The resulting
+    /// `into_iter()` iterators own their data and survive past the lock
+    /// release.
+    ///
+    /// **Trade-off:** the full scan result set for every layer is held in
+    /// memory simultaneously. For very large ranges this may be costly.
     fn raw_scan(
         &self,
         start_key: &[u8],
         end_key: &[u8],
     ) -> Result<utils::MergeIterator<'static>, EngineError> {
-        let inner = self
-            .inner
-            .read()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        let inner = self.read_lock()?;
 
         let mut iters: Vec<Box<dyn Iterator<Item = Record>>> = Vec::new();
 
-        // Active memtable - collect to own the data
+        // Active memtable — collect to own the data (see doc above).
         let active_records: Vec<_> = inner.active.scan(start_key, end_key)?.collect();
         iters.push(Box::new(active_records.into_iter()));
 
-        // Frozen memtables - collect to own the data
+        // Frozen memtables — collect to own the data.
         for frozen in &inner.frozen {
             let records: Vec<_> = frozen.scan(start_key, end_key)?.collect();
             iters.push(Box::new(records.into_iter()));
         }
 
-        // SSTables - collect to own the data
+        // SSTables — collect to own the data.
         for sstable in &inner.sstables {
             let records: Vec<_> = sstable.scan(start_key, end_key)?.collect();
             iters.push(Box::new(records.into_iter()));
@@ -559,10 +583,7 @@ impl Engine {
     /// Includes frozen memtable count, SSTable count, per-SSTable file
     /// sizes, and total on-disk SSTable size.
     pub fn stats(&self) -> Result<EngineStats, EngineError> {
-        let inner = self
-            .inner
-            .read()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        let inner = self.read_lock()?;
 
         let sst_sizes: Vec<u64> = inner.sstables.iter().map(|s| s.file_size()).collect();
         let total_sst_size_bytes: u64 = sst_sizes.iter().sum();
@@ -578,18 +599,15 @@ impl Engine {
     /// Freeze the current active memtable and swap in a fresh one.
     /// The old memtable is pushed to the front of `inner.frozen`.
     fn freeze_active(inner: &mut EngineInner) -> Result<(), EngineError> {
-        let frozen_wal_id = inner.active.wal.wal_seq();
+        let frozen_wal_id = inner.active.wal_seq();
         let current_max_lsn = inner.active.max_lsn().unwrap_or(0);
         let new_active_wal_id = frozen_wal_id + 1;
 
-        let new_active = Memtable::new(
-            format!(
-                "{}/{}/{:06}.log",
-                inner.data_dir, MEMTABLE_DIR, new_active_wal_id
-            ),
-            None,
-            inner.config.write_buffer_size,
-        )?;
+        let wal_path = inner
+            .data_dir
+            .join(MEMTABLE_DIR)
+            .join(format!("{:06}.log", new_active_wal_id));
+        let new_active = Memtable::new(wal_path, None, inner.config.write_buffer_size)?;
 
         let old_active = std::mem::replace(&mut inner.active, new_active);
         let frozen = old_active.frozen()?;
@@ -610,10 +628,7 @@ impl Engine {
     /// Returns `Ok(true)` if a frozen memtable was flushed, `Ok(false)` if
     /// there were no frozen memtables to flush.
     pub fn flush_oldest_frozen(&self) -> Result<bool, EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        let mut inner = self.write_lock()?;
 
         if inner.frozen.is_empty() {
             return Ok(false);
@@ -626,10 +641,7 @@ impl Engine {
     ///
     /// Returns the number of frozen memtables that were flushed.
     pub fn flush_all_frozen(&self) -> Result<usize, EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        let mut inner = self.write_lock()?;
 
         let mut count = 0usize;
         while !inner.frozen.is_empty() {
@@ -658,59 +670,24 @@ impl Engine {
             .ok_or_else(|| EngineError::Internal("frozen list became empty unexpectedly".into()))?;
         let frozen_wal_id = frozen.wal_seq();
 
-        // Get all records from the frozen memtable
-        let records: Vec<_> = frozen.iter_for_flush()?.collect();
-
-        // Separate into point entries and range tombstones
+        // Get all records from the frozen memtable and split into
+        // point entries and range tombstones via Record::into_entry().
         let mut point_entries = Vec::new();
         let mut range_tombstones = Vec::new();
 
-        for record in records {
-            match record {
-                Record::Put {
-                    key,
-                    value,
-                    lsn,
-                    timestamp,
-                } => {
-                    point_entries.push(PointEntry {
-                        key,
-                        value: Some(value),
-                        lsn,
-                        timestamp,
-                    });
-                }
-                Record::Delete {
-                    key,
-                    lsn,
-                    timestamp,
-                } => {
-                    point_entries.push(PointEntry {
-                        key,
-                        value: None,
-                        lsn,
-                        timestamp,
-                    });
-                }
-                Record::RangeDelete {
-                    start,
-                    end,
-                    lsn,
-                    timestamp,
-                } => {
-                    range_tombstones.push(RangeTombstone {
-                        start,
-                        end,
-                        lsn,
-                        timestamp,
-                    });
-                }
+        for record in frozen.iter_for_flush()? {
+            match record.into_entry() {
+                RecordEntry::Point(pe) => point_entries.push(pe),
+                RecordEntry::Range(rt) => range_tombstones.push(rt),
             }
         }
 
         // Generate unique SSTable ID and path
         let sstable_id = Self::next_sstable_id(inner)?;
-        let sstable_path = format!("{}/{}/{:06}.sst", inner.data_dir, SSTABLE_DIR, sstable_id);
+        let sstable_path = inner
+            .data_dir
+            .join(SSTABLE_DIR)
+            .join(format!("{:06}.sst", sstable_id));
 
         // Build the SSTable
         let point_count = point_entries.len();
@@ -732,7 +709,7 @@ impl Engine {
         // Update manifest
         inner.manifest.add_sstable(ManifestSstEntry {
             id: sstable_id,
-            path: sstable_path.into(),
+            path: sstable_path,
         })?;
 
         // Remove the frozen WAL from manifest
@@ -753,18 +730,16 @@ impl Engine {
         &self,
         strategy: &dyn crate::compaction::CompactionStrategy,
     ) -> Result<bool, EngineError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
+        let mut inner = self.write_lock()?;
 
         let inner = &mut *inner; // reborrow to split fields
         let sst_count = inner.sstables.len();
+        let data_dir_str = inner.data_dir.to_string_lossy();
         let result = strategy
             .compact(
                 &inner.sstables,
                 &mut inner.manifest,
-                &inner.data_dir,
+                &data_dir_str,
                 &inner.config,
             )
             .map_err(|e| EngineError::Internal(format!("Compaction failed: {e}")))?;
@@ -787,6 +762,23 @@ impl Engine {
         }
     }
 
+    /// Acquires the compaction strategy from the configuration and runs it.
+    ///
+    /// The `selector` function picks which strategy variant (minor, tombstone,
+    /// or major) to obtain from the configured [`crate::compaction::CompactionStrategyType`].
+    fn compact_with(
+        &self,
+        selector: fn(
+            &crate::compaction::CompactionStrategyType,
+        ) -> Box<dyn crate::compaction::CompactionStrategy>,
+    ) -> Result<bool, EngineError> {
+        let strategy = {
+            let inner = self.read_lock()?;
+            selector(&inner.config.compaction_strategy)
+        };
+        self.run_compaction(strategy.as_ref())
+    }
+
     /// Runs one round of **minor compaction** (size-tiered).
     ///
     /// Selects the best bucket whose size exceeds `min_threshold` and merges
@@ -796,14 +788,7 @@ impl Engine {
     /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if no
     /// bucket met the threshold.
     pub fn minor_compact(&self) -> Result<bool, EngineError> {
-        let strategy = {
-            let inner = self
-                .inner
-                .read()
-                .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
-            inner.config.compaction_strategy.minor()
-        };
-        self.run_compaction(strategy.as_ref())
+        self.compact_with(crate::compaction::CompactionStrategyType::minor)
     }
 
     /// Runs one round of **tombstone compaction** (per-SSTable GC).
@@ -815,14 +800,7 @@ impl Engine {
     /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if no
     /// SSTable was eligible.
     pub fn tombstone_compact(&self) -> Result<bool, EngineError> {
-        let strategy = {
-            let inner = self
-                .inner
-                .read()
-                .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
-            inner.config.compaction_strategy.tombstone()
-        };
-        self.run_compaction(strategy.as_ref())
+        self.compact_with(crate::compaction::CompactionStrategyType::tombstone)
     }
 
     /// Runs **major compaction** — merges all SSTables into one.
@@ -833,14 +811,7 @@ impl Engine {
     /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if
     /// there are fewer than 2 SSTables.
     pub fn major_compact(&self) -> Result<bool, EngineError> {
-        let strategy = {
-            let inner = self
-                .inner
-                .read()
-                .map_err(|_| EngineError::Internal("RwLock poisoned".into()))?;
-            inner.config.compaction_strategy.major()
-        };
-        self.run_compaction(strategy.as_ref())
+        self.compact_with(crate::compaction::CompactionStrategyType::major)
     }
 
     /// Applies a `CompactionResult` to the in-memory engine state.
@@ -871,100 +842,5 @@ impl Engine {
             .sort_by_key(|s| std::cmp::Reverse(s.max_lsn()));
 
         Ok(())
-    }
-}
-
-/// Type alias preserving the public scan iterator name.
-pub type EngineScanIterator = utils::MergeIterator<'static>;
-
-/// Filters a sorted record stream to yield only **visible** key-value pairs.
-///
-/// Applies point tombstone and range tombstone semantics:
-/// - A `Delete` record suppresses the same key in later (lower-LSN) records.
-/// - A `RangeDelete` suppresses any `Put` whose key falls within `[start, end)`
-///   and whose LSN is lower than the tombstone's LSN.
-///
-/// The input iterator **must** be sorted by `(key ASC, LSN DESC)` — the order
-/// produced by [`MergeIterator`](utils::MergeIterator).
-pub struct VisibilityFilter<I>
-where
-    I: Iterator<Item = Record>,
-{
-    /// Underlying merged record stream.
-    input: I,
-    /// The key most recently emitted or suppressed (used for dedup).
-    current_key: Option<Vec<u8>>,
-    /// Accumulated range tombstones that may cover upcoming keys.
-    active_ranges: Vec<RangeTombstone>,
-}
-
-impl<I> VisibilityFilter<I>
-where
-    I: Iterator<Item = Record>,
-{
-    pub fn new(input: I) -> Self {
-        Self {
-            input,
-            current_key: None,
-            active_ranges: Vec::new(),
-        }
-    }
-}
-
-impl<I> Iterator for VisibilityFilter<I>
-where
-    I: Iterator<Item = Record>,
-{
-    type Item = (Vec<u8>, Vec<u8>); // (key, value)
-
-    fn next(&mut self) -> Option<Self::Item> {
-        for record in self.input.by_ref() {
-            match record {
-                Record::RangeDelete {
-                    start,
-                    end,
-                    lsn,
-                    timestamp,
-                } => {
-                    self.active_ranges.push(RangeTombstone {
-                        start,
-                        end,
-                        lsn,
-                        timestamp,
-                    });
-                    // Range tombstone itself is not returned
-                }
-
-                Record::Delete { key, .. } => {
-                    self.current_key = Some(key.clone());
-                }
-
-                Record::Put {
-                    key, value, lsn, ..
-                } => {
-                    // Skip if we've already handled this key
-                    if self.current_key.as_deref() == Some(&key) {
-                        continue;
-                    }
-
-                    // Check range tombstones
-                    let deleted = self.active_ranges.iter().any(|r| {
-                        r.start.as_slice() <= key.as_slice()
-                            && key.as_slice() < r.end.as_slice()
-                            && r.lsn > lsn
-                    });
-
-                    self.current_key = Some(key.clone());
-
-                    if deleted {
-                        continue; // This record is shadowed by a range tombstone
-                    }
-
-                    return Some((key, value));
-                }
-            }
-        }
-
-        None
     }
 }

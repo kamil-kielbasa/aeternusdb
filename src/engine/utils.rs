@@ -10,8 +10,6 @@
 //! - [`MergeIterator`] — a heap-based k-way merge iterator that combines
 //!   multiple sorted record streams into a single globally-sorted stream.
 
-use crate::encoding::{self, EncodingError};
-
 /// Represents a single item emitted by the storage engine.
 #[derive(Debug, Clone)]
 pub enum Record {
@@ -71,7 +69,7 @@ impl Record {
     /// Returns the primary key of this record.
     ///
     /// For `RangeDelete` records this returns the **start** key of the range.
-    pub fn key(&self) -> &Vec<u8> {
+    pub fn key(&self) -> &[u8] {
         match self {
             Record::Put { key, .. } => key,
             Record::Delete { key, .. } => key,
@@ -88,17 +86,97 @@ impl Record {
             Record::RangeDelete { timestamp, .. } => *timestamp,
         }
     }
+
+    /// Converts this record into its SSTable-level representation.
+    ///
+    /// Point puts and point deletes become [`PointEntry`] values;
+    /// range deletes become [`RangeTombstone`] values.
+    pub fn into_entry(self) -> RecordEntry {
+        match self {
+            Record::Put {
+                key,
+                value,
+                lsn,
+                timestamp,
+            } => RecordEntry::Point(PointEntry {
+                key,
+                value: Some(value),
+                lsn,
+                timestamp,
+            }),
+            Record::Delete {
+                key,
+                lsn,
+                timestamp,
+            } => RecordEntry::Point(PointEntry {
+                key,
+                value: None,
+                lsn,
+                timestamp,
+            }),
+            Record::RangeDelete {
+                start,
+                end,
+                lsn,
+                timestamp,
+            } => RecordEntry::Range(RangeTombstone {
+                start,
+                end,
+                lsn,
+                timestamp,
+            }),
+        }
+    }
+}
+
+/// Result of splitting a [`Record`] into its SSTable-level representation.
+///
+/// Used when flushing memtables or compacting SSTables: point mutations
+/// (puts and deletes) travel as [`PointEntry`], while range tombstones
+/// travel separately.
+pub enum RecordEntry {
+    /// A point put or point delete.
+    Point(PointEntry),
+    /// A range tombstone.
+    Range(RangeTombstone),
+}
+
+// ------------------------------------------------------------------------------------------------
+// Ord / Eq — ordering by (key ASC, LSN DESC)
+// ------------------------------------------------------------------------------------------------
+
+impl PartialEq for Record {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key() && self.lsn() == other.lsn()
+    }
+}
+
+impl Eq for Record {}
+
+impl PartialOrd for Record {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Record {
+    /// Compares by `(key ASC, LSN DESC)`.
+    ///
+    /// For a given key the highest-LSN (most recent) record sorts first,
+    /// ensuring it is seen before older versions during merge iteration.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.key().cmp(other.key()) {
+            std::cmp::Ordering::Equal => other.lsn().cmp(&self.lsn()),
+            ord => ord,
+        }
+    }
 }
 
 /// Compares two records by `(key ASC, LSN DESC)`.
 ///
-/// This ordering ensures that for any given key, the highest-LSN
-/// (most recent) record appears first in a sorted stream.
+/// Equivalent to `a.cmp(b)` via the [`Ord`] implementation on [`Record`].
 pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
-    match a.key().cmp(b.key()) {
-        std::cmp::Ordering::Equal => b.lsn().cmp(&a.lsn()),
-        other => other,
-    }
+    a.cmp(b)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -123,6 +201,33 @@ pub struct PointEntry {
 
     /// Timestamp associated with this mutation.
     pub timestamp: u64,
+}
+
+impl PointEntry {
+    /// Creates a new point put entry.
+    pub fn new(
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+        lsn: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            value: Some(value.into()),
+            lsn,
+            timestamp,
+        }
+    }
+
+    /// Creates a new point delete (tombstone) entry.
+    pub fn new_delete(key: impl Into<Vec<u8>>, lsn: u64, timestamp: u64) -> Self {
+        Self {
+            key: key.into(),
+            value: None,
+            lsn,
+            timestamp,
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -151,150 +256,20 @@ pub struct RangeTombstone {
     pub timestamp: u64,
 }
 
-// ------------------------------------------------------------------------------------------------
-// Encode / Decode — Record
-// ------------------------------------------------------------------------------------------------
-
-impl encoding::Encode for Record {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        match self {
-            Record::Put {
-                key,
-                value,
-                lsn,
-                timestamp,
-            } => {
-                0u32.encode_to(buf)?;
-                key.encode_to(buf)?;
-                value.encode_to(buf)?;
-                lsn.encode_to(buf)?;
-                timestamp.encode_to(buf)?;
-            }
-            Record::Delete {
-                key,
-                lsn,
-                timestamp,
-            } => {
-                1u32.encode_to(buf)?;
-                key.encode_to(buf)?;
-                lsn.encode_to(buf)?;
-                timestamp.encode_to(buf)?;
-            }
-            Record::RangeDelete {
-                start,
-                end,
-                lsn,
-                timestamp,
-            } => {
-                2u32.encode_to(buf)?;
-                start.encode_to(buf)?;
-                end.encode_to(buf)?;
-                lsn.encode_to(buf)?;
-                timestamp.encode_to(buf)?;
-            }
+impl RangeTombstone {
+    /// Creates a new range tombstone covering `[start, end)`.
+    pub fn new(
+        start: impl Into<Vec<u8>>,
+        end: impl Into<Vec<u8>>,
+        lsn: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            start: start.into(),
+            end: end.into(),
+            lsn,
+            timestamp,
         }
-        Ok(())
-    }
-}
-
-impl encoding::Decode for Record {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let (tag, mut offset) = u32::decode_from(buf)?;
-        match tag {
-            0 => {
-                let (key, n) = Vec::<u8>::decode_from(&buf[offset..])?;
-                offset += n;
-                let (value, n) = Vec::<u8>::decode_from(&buf[offset..])?;
-                offset += n;
-                let (lsn, n) = u64::decode_from(&buf[offset..])?;
-                offset += n;
-                let (timestamp, n) = u64::decode_from(&buf[offset..])?;
-                offset += n;
-                Ok((
-                    Record::Put {
-                        key,
-                        value,
-                        lsn,
-                        timestamp,
-                    },
-                    offset,
-                ))
-            }
-            1 => {
-                let (key, n) = Vec::<u8>::decode_from(&buf[offset..])?;
-                offset += n;
-                let (lsn, n) = u64::decode_from(&buf[offset..])?;
-                offset += n;
-                let (timestamp, n) = u64::decode_from(&buf[offset..])?;
-                offset += n;
-                Ok((
-                    Record::Delete {
-                        key,
-                        lsn,
-                        timestamp,
-                    },
-                    offset,
-                ))
-            }
-            2 => {
-                let (start, n) = Vec::<u8>::decode_from(&buf[offset..])?;
-                offset += n;
-                let (end, n) = Vec::<u8>::decode_from(&buf[offset..])?;
-                offset += n;
-                let (lsn, n) = u64::decode_from(&buf[offset..])?;
-                offset += n;
-                let (timestamp, n) = u64::decode_from(&buf[offset..])?;
-                offset += n;
-                Ok((
-                    Record::RangeDelete {
-                        start,
-                        end,
-                        lsn,
-                        timestamp,
-                    },
-                    offset,
-                ))
-            }
-            _ => Err(EncodingError::InvalidTag {
-                tag,
-                type_name: "Record",
-            }),
-        }
-    }
-}
-
-// ------------------------------------------------------------------------------------------------
-// Encode / Decode — RangeTombstone
-// ------------------------------------------------------------------------------------------------
-
-impl encoding::Encode for RangeTombstone {
-    fn encode_to(&self, buf: &mut Vec<u8>) -> Result<(), EncodingError> {
-        self.start.encode_to(buf)?;
-        self.end.encode_to(buf)?;
-        self.lsn.encode_to(buf)?;
-        self.timestamp.encode_to(buf)?;
-        Ok(())
-    }
-}
-
-impl encoding::Decode for RangeTombstone {
-    fn decode_from(buf: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let (start, mut offset) = Vec::<u8>::decode_from(buf)?;
-        let (end, n) = Vec::<u8>::decode_from(&buf[offset..])?;
-        offset += n;
-        let (lsn, n) = u64::decode_from(&buf[offset..])?;
-        offset += n;
-        let (timestamp, n) = u64::decode_from(&buf[offset..])?;
-        offset += n;
-        Ok((
-            RangeTombstone {
-                start,
-                end,
-                lsn,
-                timestamp,
-            },
-            offset,
-        ))
     }
 }
 
@@ -327,7 +302,7 @@ struct MergeHeapEntry<'a> {
 impl Ord for MergeHeapEntry<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Min-heap: reverse so smallest key / highest LSN pops first.
-        record_cmp(&self.record, &other.record).reverse()
+        self.record.cmp(&other.record).reverse()
     }
 }
 
@@ -339,7 +314,7 @@ impl PartialOrd for MergeHeapEntry<'_> {
 
 impl PartialEq for MergeHeapEntry<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.record.lsn() == other.record.lsn() && self.record.key() == other.record.key()
+        self.record == other.record
     }
 }
 

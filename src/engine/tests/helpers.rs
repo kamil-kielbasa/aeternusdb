@@ -16,17 +16,12 @@ pub fn memtable_only_config() -> EngineConfig {
     init_tracing();
     EngineConfig {
         write_buffer_size: 64 * 1024, // 64KB — large enough to avoid flushes
-        compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
-        bucket_low: 0.5,
-        bucket_high: 1.5,
         min_sstable_size: 1024,
-        min_threshold: 4,
-        max_threshold: 32,
         tombstone_ratio_threshold: 0.2,
         tombstone_compaction_interval: 3600,
         tombstone_bloom_fallback: false,
         tombstone_range_drop: false,
-        thread_pool_size: 2,
+        ..EngineConfig::default()
     }
 }
 
@@ -35,17 +30,12 @@ pub fn small_buffer_config() -> EngineConfig {
     init_tracing();
     EngineConfig {
         write_buffer_size: 128,
-        compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
-        bucket_low: 0.5,
-        bucket_high: 1.5,
         min_sstable_size: 1024,
-        min_threshold: 4,
-        max_threshold: 32,
         tombstone_ratio_threshold: 0.2,
         tombstone_compaction_interval: 3600,
         tombstone_bloom_fallback: false,
         tombstone_range_drop: false,
-        thread_pool_size: 2,
+        ..EngineConfig::default()
     }
 }
 
@@ -54,17 +44,12 @@ pub fn default_config() -> EngineConfig {
     init_tracing();
     EngineConfig {
         write_buffer_size: 4096,
-        compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
-        bucket_low: 0.5,
-        bucket_high: 1.5,
         min_sstable_size: 1024,
-        min_threshold: 4,
-        max_threshold: 32,
         tombstone_ratio_threshold: 0.2,
         tombstone_compaction_interval: 3600,
         tombstone_bloom_fallback: false,
         tombstone_range_drop: false,
-        thread_pool_size: 2,
+        ..EngineConfig::default()
     }
 }
 
@@ -73,17 +58,12 @@ pub fn multi_sstable_config() -> EngineConfig {
     init_tracing();
     EngineConfig {
         write_buffer_size: 1024,
-        compaction_strategy: crate::compaction::CompactionStrategyType::Stcs,
-        bucket_low: 0.5,
-        bucket_high: 1.5,
         min_sstable_size: 1024,
-        min_threshold: 4,
-        max_threshold: 32,
         tombstone_ratio_threshold: 0.2,
         tombstone_compaction_interval: 3600,
         tombstone_bloom_fallback: false,
         tombstone_range_drop: false,
-        thread_pool_size: 2,
+        ..EngineConfig::default()
     }
 }
 

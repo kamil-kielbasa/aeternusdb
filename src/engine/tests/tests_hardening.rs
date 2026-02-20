@@ -267,7 +267,7 @@ mod tests {
     }
 
     // ================================================================
-    // EngineScanIterator: empty sources (scan on empty engine)
+    // EngineScanIterator / MergeIterator: empty sources (scan on empty engine)
     // ================================================================
 
     /// # Scenario

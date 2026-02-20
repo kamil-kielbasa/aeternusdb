@@ -898,6 +898,11 @@ impl Memtable {
         if next <= 1 { None } else { Some(next - 1) }
     }
 
+    /// Returns the WAL sequence number for this memtable.
+    pub fn wal_seq(&self) -> u64 {
+        self.wal.wal_seq()
+    }
+
     /// Returns the current system timestamp in nanoseconds.
     ///
     /// Used to tag entries for ordering and diagnostics.
