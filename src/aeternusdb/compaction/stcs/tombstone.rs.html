@@ -50,7 +50,7 @@
 <a href=#50 id=50 data-nosnippet>50</a>    <span class="kw">let </span>tombstone_total =
 <a href=#51 id=51 data-nosnippet>51</a>        target.properties.tombstone_count + target.properties.range_tombstones_count;
 <a href=#52 id=52 data-nosnippet>52</a>    <span class="macro">info!</span>(
-<a href=#53 id=53 data-nosnippet>53</a>        target_id = target.id,
+<a href=#53 id=53 data-nosnippet>53</a>        target_id = target.id(),
 <a href=#54 id=54 data-nosnippet>54</a>        tombstone_count = tombstone_total,
 <a href=#55 id=55 data-nosnippet>55</a>        record_count = target.properties.record_count,
 <a href=#56 id=56 data-nosnippet>56</a>        <span class="string">"tombstone compaction: starting rewrite"
@@ -63,7 +63,7 @@
 <a href=#63 id=63 data-nosnippet>63</a>    // so the caller's `while compact() {}` loop terminates.
 <a href=#64 id=64 data-nosnippet>64</a>    </span><span class="kw">if </span>result.removed_ids.is_empty() {
 <a href=#65 id=65 data-nosnippet>65</a>        <span class="macro">debug!</span>(
-<a href=#66 id=66 data-nosnippet>66</a>            target_id = target.id,
+<a href=#66 id=66 data-nosnippet>66</a>            target_id = target.id(),
 <a href=#67 id=67 data-nosnippet>67</a>            <span class="string">"tombstone compaction: candidate selected but no tombstones could be dropped"
 <a href=#68 id=68 data-nosnippet>68</a>        </span>);
 <a href=#69 id=69 data-nosnippet>69</a>        <span class="kw">return </span><span class="prelude-val">Ok</span>(<span class="prelude-val">None</span>);
@@ -147,7 +147,7 @@
 <a href=#147 id=147 data-nosnippet>147</a>    </span><span class="kw">let </span>older_sstables: Vec&lt;<span class="kw-2">&amp;</span>SSTable&gt; = sstables
 <a href=#148 id=148 data-nosnippet>148</a>        .iter()
 <a href=#149 id=149 data-nosnippet>149</a>        .enumerate()
-<a href=#150 id=150 data-nosnippet>150</a>        .filter(|(i, <span class="kw">_</span>)| <span class="kw-2">*</span><span class="macro">i !</span>= target_idx &amp;&amp; sstables[<span class="kw-2">*</span>i].id &lt; target.id)
+<a href=#150 id=150 data-nosnippet>150</a>        .filter(|(i, <span class="kw">_</span>)| <span class="kw-2">*</span><span class="macro">i !</span>= target_idx &amp;&amp; sstables[<span class="kw-2">*</span>i].id() &lt; target.id())
 <a href=#151 id=151 data-nosnippet>151</a>        .map(|(<span class="kw">_</span>, s)| s)
 <a href=#152 id=152 data-nosnippet>152</a>        .collect();
 <a href=#153 id=153 data-nosnippet>153</a>
@@ -279,7 +279,7 @@
 <a href=#279 id=279 data-nosnippet>279</a>        });
 <a href=#280 id=280 data-nosnippet>280</a>    }
 <a href=#281 id=281 data-nosnippet>281</a>
-<a href=#282 id=282 data-nosnippet>282</a>    <span class="kw">let </span>removed_ids = <span class="macro">vec!</span>[target.id];
+<a href=#282 id=282 data-nosnippet>282</a>    <span class="kw">let </span>removed_ids = <span class="macro">vec!</span>[target.id()];
 <a href=#283 id=283 data-nosnippet>283</a>    finalize_compaction(
 <a href=#284 id=284 data-nosnippet>284</a>        manifest,
 <a href=#285 id=285 data-nosnippet>285</a>        data_dir,

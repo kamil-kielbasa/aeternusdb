@@ -261,7 +261,7 @@
 <a href=#261 id=261 data-nosnippet>261</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sstable_handles = Vec::new();
 <a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">for </span>sstable_entry <span class="kw">in </span>sstables {
 <a href=#263 id=263 data-nosnippet>263</a>            <span class="kw">let </span><span class="kw-2">mut </span>sstable = SSTable::open(<span class="kw-2">&amp;</span>sstable_entry.path)<span class="question-mark">?</span>;
-<a href=#264 id=264 data-nosnippet>264</a>            sstable.id = sstable_entry.id;
+<a href=#264 id=264 data-nosnippet>264</a>            sstable.set_id(sstable_entry.id);
 <a href=#265 id=265 data-nosnippet>265</a>            sstable_handles.push(sstable);
 <a href=#266 id=266 data-nosnippet>266</a>        }
 <a href=#267 id=267 data-nosnippet>267</a>
@@ -279,8 +279,8 @@
 <a href=#279 id=279 data-nosnippet>279</a>        }
 <a href=#280 id=280 data-nosnippet>280</a>
 <a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">for </span>sstable <span class="kw">in </span>sstable_handles.iter() {
-<a href=#282 id=282 data-nosnippet>282</a>            <span class="kw">if </span>sstable.properties.max_lsn &gt; max_lsn {
-<a href=#283 id=283 data-nosnippet>283</a>                max_lsn = sstable.properties.max_lsn;
+<a href=#282 id=282 data-nosnippet>282</a>            <span class="kw">if </span>sstable.max_lsn() &gt; max_lsn {
+<a href=#283 id=283 data-nosnippet>283</a>                max_lsn = sstable.max_lsn();
 <a href=#284 id=284 data-nosnippet>284</a>            }
 <a href=#285 id=285 data-nosnippet>285</a>        }
 <a href=#286 id=286 data-nosnippet>286</a>
@@ -297,7 +297,7 @@
 <a href=#297 id=297 data-nosnippet>297</a>        <span class="comment">// Sort SSTables by max_lsn descending.  This lets get()
 <a href=#298 id=298 data-nosnippet>298</a>        // early-terminate: once we find a result at LSN L, any SSTable
 <a href=#299 id=299 data-nosnippet>299</a>        // whose max_lsn ≤ L cannot contain a newer version of any key.
-<a href=#300 id=300 data-nosnippet>300</a>        </span>sstable_handles.sort_by(|a, b| b.properties.max_lsn.cmp(<span class="kw-2">&amp;</span>a.properties.max_lsn));
+<a href=#300 id=300 data-nosnippet>300</a>        </span>sstable_handles.sort_by_key(|s| std::cmp::Reverse(s.max_lsn()));
 <a href=#301 id=301 data-nosnippet>301</a>
 <a href=#302 id=302 data-nosnippet>302</a>        <span class="kw">let </span>inner = EngineInner {
 <a href=#303 id=303 data-nosnippet>303</a>            manifest,
@@ -485,7 +485,7 @@
 <a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">for </span>sst <span class="kw">in </span><span class="kw-2">&amp;</span>inner.sstables {
 <a href=#486 id=486 data-nosnippet>486</a>            <span class="comment">// Early termination: this SSTable (and all after it) have
 <a href=#487 id=487 data-nosnippet>487</a>            // max_lsn ≤ best_lsn, so they can't contain a newer version.
-<a href=#488 id=488 data-nosnippet>488</a>            </span><span class="kw">if </span>sst.properties.max_lsn &lt;= best_lsn {
+<a href=#488 id=488 data-nosnippet>488</a>            </span><span class="kw">if </span>sst.max_lsn() &lt;= best_lsn {
 <a href=#489 id=489 data-nosnippet>489</a>                <span class="kw">break</span>;
 <a href=#490 id=490 data-nosnippet>490</a>            }
 <a href=#491 id=491 data-nosnippet>491</a>
@@ -729,7 +729,7 @@
 <a href=#729 id=729 data-nosnippet>729</a>
 <a href=#730 id=730 data-nosnippet>730</a>        <span class="comment">// Load the newly created SSTable
 <a href=#731 id=731 data-nosnippet>731</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sstable = SSTable::open(<span class="kw-2">&amp;</span>sstable_path)<span class="question-mark">?</span>;
-<a href=#732 id=732 data-nosnippet>732</a>        sstable.id = sstable_id;
+<a href=#732 id=732 data-nosnippet>732</a>        sstable.set_id(sstable_id);
 <a href=#733 id=733 data-nosnippet>733</a>        <span class="comment">// Insert at beginning to maintain sorted order (newest first)
 <a href=#734 id=734 data-nosnippet>734</a>        </span>inner.sstables.insert(<span class="number">0</span>, sstable);
 <a href=#735 id=735 data-nosnippet>735</a>
@@ -859,12 +859,12 @@
 <a href=#859 id=859 data-nosnippet>859</a>        <span class="comment">// Remove consumed SSTables.
 <a href=#860 id=860 data-nosnippet>860</a>        </span>inner
 <a href=#861 id=861 data-nosnippet>861</a>            .sstables
-<a href=#862 id=862 data-nosnippet>862</a>            .retain(|sst| !cr.removed_ids.contains(<span class="kw-2">&amp;</span>sst.id));
+<a href=#862 id=862 data-nosnippet>862</a>            .retain(|sst| !cr.removed_ids.contains(<span class="kw-2">&amp;</span>sst.id()));
 <a href=#863 id=863 data-nosnippet>863</a>
 <a href=#864 id=864 data-nosnippet>864</a>        <span class="comment">// Load and insert new SSTable if one was produced.
 <a href=#865 id=865 data-nosnippet>865</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">ref </span>path) = cr.new_sst_path {
 <a href=#866 id=866 data-nosnippet>866</a>            <span class="kw">let </span><span class="kw-2">mut </span>new_sst = SSTable::open(path)<span class="question-mark">?</span>;
-<a href=#867 id=867 data-nosnippet>867</a>            new_sst.id = cr.new_sst_id.unwrap_or(<span class="number">0</span>);
+<a href=#867 id=867 data-nosnippet>867</a>            new_sst.set_id(cr.new_sst_id.unwrap_or(<span class="number">0</span>));
 <a href=#868 id=868 data-nosnippet>868</a>            inner.sstables.push(new_sst);
 <a href=#869 id=869 data-nosnippet>869</a>        }
 <a href=#870 id=870 data-nosnippet>870</a>
@@ -872,7 +872,7 @@
 <a href=#872 id=872 data-nosnippet>872</a>        // invariant used by get().
 <a href=#873 id=873 data-nosnippet>873</a>        </span>inner
 <a href=#874 id=874 data-nosnippet>874</a>            .sstables
-<a href=#875 id=875 data-nosnippet>875</a>            .sort_by(|a, b| b.properties.max_lsn.cmp(<span class="kw-2">&amp;</span>a.properties.max_lsn));
+<a href=#875 id=875 data-nosnippet>875</a>            .sort_by_key(|s| std::cmp::Reverse(s.max_lsn()));
 <a href=#876 id=876 data-nosnippet>876</a>
 <a href=#877 id=877 data-nosnippet>877</a>        <span class="prelude-val">Ok</span>(())
 <a href=#878 id=878 data-nosnippet>878</a>    }

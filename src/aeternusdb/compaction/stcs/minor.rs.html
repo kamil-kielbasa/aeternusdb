@@ -35,7 +35,7 @@
 <a href=#35 id=35 data-nosnippet>35</a>        }
 <a href=#36 id=36 data-nosnippet>36</a>    };
 <a href=#37 id=37 data-nosnippet>37</a>
-<a href=#38 id=38 data-nosnippet>38</a>    <span class="kw">let </span>selected_ids: Vec&lt;u64&gt; = selected.iter().map(|<span class="kw-2">&amp;</span>i| sstables[i].id).collect();
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="kw">let </span>selected_ids: Vec&lt;u64&gt; = selected.iter().map(|<span class="kw-2">&amp;</span>i| sstables[i].id()).collect();
 <a href=#39 id=39 data-nosnippet>39</a>    <span class="macro">info!</span>(
 <a href=#40 id=40 data-nosnippet>40</a>        selected_count = selected.len(),
 <a href=#41 id=41 data-nosnippet>41</a>        <span class="question-mark">?</span>selected_ids,
@@ -65,7 +65,7 @@
 <a href=#65 id=65 data-nosnippet>65</a>) -&gt; <span class="prelude-ty">Result</span>&lt;CompactionResult, CompactionError&gt; {
 <a href=#66 id=66 data-nosnippet>66</a>    <span class="kw">let </span>selected_ssts: Vec&lt;<span class="kw-2">&amp;</span>SSTable&gt; = selected_indices.iter().map(|<span class="kw-2">&amp;</span>i| <span class="kw-2">&amp;</span>sstables[i]).collect();
 <a href=#67 id=67 data-nosnippet>67</a>
-<a href=#68 id=68 data-nosnippet>68</a>    <span class="kw">let </span>removed_ids: Vec&lt;u64&gt; = selected_ssts.iter().map(|s| s.id).collect();
+<a href=#68 id=68 data-nosnippet>68</a>    <span class="kw">let </span>removed_ids: Vec&lt;u64&gt; = selected_ssts.iter().map(|s| s.id()).collect();
 <a href=#69 id=69 data-nosnippet>69</a>
 <a href=#70 id=70 data-nosnippet>70</a>    <span class="comment">// Streaming merge over all selected SSTables.
 <a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">let </span>iters = full_range_scan_iters(<span class="kw-2">&amp;</span>selected_ssts)<span class="question-mark">?</span>;
