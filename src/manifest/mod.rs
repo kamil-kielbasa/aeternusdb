@@ -723,7 +723,6 @@ impl Manifest {
         Ok(())
     }
 
-    // TODO: refactor logic!
     fn read_snapshot(p: &Path) -> Result<(ManifestData, u64), ManifestError> {
         let mut f = File::open(p)?;
         let mut buf = Vec::new();

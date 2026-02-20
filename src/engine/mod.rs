@@ -167,6 +167,7 @@ impl Default for EngineConfig {
 
 /// Snapshot of engine statistics returned by [`Engine::stats`].
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct EngineStats {
     /// Number of frozen memtables pending flush.
     pub frozen_count: usize,
@@ -593,6 +594,7 @@ impl Engine {
     ///
     /// Includes frozen memtable count, SSTable count, per-SSTable file
     /// sizes, and total on-disk SSTable size.
+    #[allow(dead_code)]
     pub fn stats(&self) -> Result<EngineStats, EngineError> {
         let inner = self.read_lock()?;
 
@@ -651,6 +653,7 @@ impl Engine {
     /// Flush **all** frozen memtables to SSTables.
     ///
     /// Returns the number of frozen memtables that were flushed.
+    #[allow(dead_code)]
     pub fn flush_all_frozen(&self) -> Result<usize, EngineError> {
         let mut inner = self.write_lock()?;
 

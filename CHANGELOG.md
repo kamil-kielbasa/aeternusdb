@@ -4,7 +4,7 @@ All notable changes to AeternusDB are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.1.0] — 2026-02-20
+## [1.0.0] — 2025-02-20
 
 ### Changed
 
@@ -14,15 +14,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - **`ScanIterator<S>` made generic** — the SSTable scan iterator is now generic over `S: Deref<Target = SSTable>`, supporting both borrowed (`&SSTable`, for compaction) and owned (`Arc<SSTable>`, for MVCC scans) access.
 - **`SSTable::scan_owned()`** — new associated function that clones an `Arc<SSTable>` and returns a `ScanIterator<Arc<SSTable>>` (`'static` iterator).
 - **`CompactionStrategy` trait** updated to accept `&[Arc<SSTable>]` — all STCS implementations (minor, tombstone, major) adapted accordingly.
-
-### Added
-
-#### Testing
-- 11 new tests for MVCC snapshot scans:
-  - `tests_scan_owned` (6 tests) — owned scan equivalence with borrowed scan, Arc survival after drop, range tombstone interleaving, mixed record types, empty range, compile-time `'static` proof.
-  - `tests_mvcc_scan` (5 tests) — scan merges all three layers, scan survives concurrent flush, scan survives concurrent compaction, large range across many SSTables, latest version wins across layers.
-
-## [1.0.0] — 2025-02-18
 
 ### Added
 
@@ -92,6 +83,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 #### Testing
 - 467 tests total (413 unit + 27 integration + 22 integration hardening + 5 doc-tests); 0 failures, 0 warnings.
 - 11 stress tests (marked `#[ignore]`) for concurrency, crash recovery, and compaction under load.
+- 11 MVCC snapshot scan tests:
+  - `tests_scan_owned` (6 tests) — owned scan equivalence with borrowed scan, Arc survival after drop, range tombstone interleaving, mixed record types, empty range, compile-time `'static` proof.
+  - `tests_mvcc_scan` (5 tests) — scan merges all three layers, scan survives concurrent flush, scan survives concurrent compaction, large range across many SSTables, latest version wins across layers.
 
 **Priority 1 — Critical correctness (29 tests across 5 files)**
 - `tests_crash_recovery` — WAL truncation at various offsets, partial flush crash, crash-on-reopen idempotency.

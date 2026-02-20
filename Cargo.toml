@@ -2,10 +2,15 @@
 name = "aeternusdb"
 version = "1.0.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
-description = "A library that provides an embeddable, persistent key-value store for fast storage."
+description = "An embeddable, persistent key-value store built on an LSM-tree architecture."
 readme = "README.md"
 repository = "https://github.com/kamil-kielbasa/aeternusdb"
+documentation = "https://docs.rs/aeternusdb"
+keywords = ["database", "key-value", "lsm-tree", "storage-engine", "embedded-database"]
+categories = ["database-implementations"]
+exclude = [".github/", "deny.toml", "doc/"]
 
 [dependencies]
 bloomfilter = "3.0.1"

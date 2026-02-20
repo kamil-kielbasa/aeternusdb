@@ -163,16 +163,19 @@ impl WalHeader {
     pub const HEADER_DISK_SIZE: usize = Self::ENCODED_SIZE + U32_SIZE;
 
     /// Returns the WAL segment sequence number.
+    #[allow(dead_code)]
     pub fn wal_seq(&self) -> u64 {
         self.wal_seq
     }
 
     /// Returns the maximum record size (in bytes).
+    #[allow(dead_code)]
     pub fn max_record_size(&self) -> u32 {
         self.max_record_size
     }
 
     /// Returns the WAL format version.
+    #[allow(dead_code)]
     pub fn version(&self) -> u32 {
         self.version
     }
@@ -406,6 +409,7 @@ impl<T: WalData> Wal<T> {
     /// and replaces `self` with the new instance.
     ///
     /// Returns the new WAL sequence number.
+    #[allow(dead_code)]
     pub fn rotate_next(&mut self) -> Result<u64, WalError> {
         {
             let guard = self
@@ -432,6 +436,7 @@ impl<T: WalData> Wal<T> {
     }
 
     /// Get the path of the underlying WAL file.
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -442,11 +447,13 @@ impl<T: WalData> Wal<T> {
     }
 
     /// Returns the configured maximum record size.
+    #[allow(dead_code)]
     pub fn max_record_size(&self) -> u32 {
         self.header.max_record_size
     }
 
     /// Returns the current on-disk file size in bytes.
+    #[allow(dead_code)]
     pub fn file_size(&self) -> Result<u64, WalError> {
         let guard = self
             .inner_file

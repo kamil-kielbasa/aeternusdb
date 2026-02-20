@@ -143,6 +143,7 @@ impl MemtablePointEntry {
     }
 
     /// Returns the timestamp of this entry, regardless of variant.
+    #[allow(dead_code)]
     pub fn timestamp(&self) -> u64 {
         match self {
             Self::Put { timestamp, .. } | Self::Delete { timestamp, .. } => *timestamp,
@@ -150,11 +151,13 @@ impl MemtablePointEntry {
     }
 
     /// Returns `true` if this entry is a deletion tombstone.
+    #[allow(dead_code)]
     pub fn is_delete(&self) -> bool {
         matches!(self, Self::Delete { .. })
     }
 
     /// Returns the value if this is a `Put`, or `None` for a `Delete`.
+    #[allow(dead_code)]
     pub fn value(&self) -> Option<&[u8]> {
         match self {
             Self::Put { value, .. } => Some(value),
@@ -247,6 +250,7 @@ pub enum MemtableGetResult {
 ///
 /// Returned by [`Memtable::stats`] under a short read lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct MemtableStats {
     /// Approximate in-memory size in bytes (keys + values + metadata).
     pub size_bytes: usize,
@@ -836,6 +840,7 @@ impl Memtable {
     }
 
     /// Returns a snapshot of memtable statistics under a short read lock.
+    #[allow(dead_code)]
     pub fn stats(&self) -> Result<MemtableStats, MemtableError> {
         let guard = self.inner.read().map_err(|_| {
             error!("Read-write lock poisoned during stats");
@@ -929,6 +934,7 @@ impl Memtable {
 /// to an on-disk SSTable.
 pub struct FrozenMemtable {
     memtable: Memtable,
+    #[allow(dead_code)]
     creation_timestamp: u64,
 }
 
@@ -947,6 +953,7 @@ impl FrozenMemtable {
     }
 
     /// Returns the timestamp at which this memtable was frozen.
+    #[allow(dead_code)]
     pub fn creation_timestamp(&self) -> u64 {
         self.creation_timestamp
     }
@@ -988,6 +995,7 @@ impl FrozenMemtable {
 /// # Object safety
 /// The trait is object-safe — all methods take `&self` and return concrete
 /// types, so `Box<dyn ReadMemtable>` is valid.
+#[allow(dead_code)]
 pub trait ReadMemtable {
     /// Retrieves the latest visible state of a key.
     fn get(&self, key: &[u8]) -> Result<MemtableGetResult, MemtableError>;

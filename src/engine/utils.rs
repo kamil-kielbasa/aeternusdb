@@ -175,6 +175,7 @@ impl Ord for Record {
 /// Compares two records by `(key ASC, LSN DESC)`.
 ///
 /// Equivalent to `a.cmp(b)` via the [`Ord`] implementation on [`Record`].
+#[allow(dead_code)]
 pub fn record_cmp(a: &Record, b: &Record) -> std::cmp::Ordering {
     a.cmp(b)
 }

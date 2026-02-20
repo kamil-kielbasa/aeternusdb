@@ -393,6 +393,7 @@ pub struct SSTable {
     pub(crate) mmap: Mmap,
 
     /// Parsed header block containing magic/version information.
+    #[allow(dead_code)]
     pub(crate) header: SSTableHeader,
 
     /// Bloom filter block for fast membership tests.

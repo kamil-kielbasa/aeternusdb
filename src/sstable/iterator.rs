@@ -193,6 +193,7 @@ impl BlockIterator {
     }
 
     /// Returns `true` if the iterator has reached the end of the block or encountered corruption.
+    #[allow(dead_code)]
     pub fn is_end(&self) -> bool {
         self.cursor >= self.data.len()
     }

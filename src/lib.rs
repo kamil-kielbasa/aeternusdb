@@ -40,8 +40,6 @@
 //! - **CRC32 integrity** — all on-disk blocks are checksummed.
 //! - **Crash recovery** — automatic recovery from WAL on restart.
 
-#![allow(dead_code)]
-
 pub(crate) mod compaction;
 pub(crate) mod encoding;
 pub(crate) mod engine;
